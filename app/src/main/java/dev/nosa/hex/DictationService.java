@@ -40,12 +40,10 @@ public class DictationService extends Service implements RecognitionListener {
     BubbleService requestedOwner = BubbleService.instance;
     if (requestedOwner == null || !requestedOwner.isStarting(requested)) {
       if (instance == null) stopSelf(id);
-      CaptureActivity.dismiss(requested);
       return START_NOT_STICKY;
     }
     if (instance != null) {
       if (session != requested) requestedOwner.fail("Finishing the previous recording. Tap again.");
-      CaptureActivity.dismiss(requested);
       return START_NOT_STICKY;
     }
     session = requested;
@@ -75,8 +73,6 @@ public class DictationService extends Service implements RecognitionListener {
       else startRemote();
     } catch (Exception e) {
       fail("Could not start recording. Check microphone access and the selected recognition mode.");
-    } finally {
-      CaptureActivity.dismiss(session);
     }
     return START_NOT_STICKY;
   }

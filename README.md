@@ -12,10 +12,15 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
   Even the smallest setting keeps a 48 dp touch target.
 - Hex-inspired dot-scope recording bar: voice-reactive paired dot waves, pearl
   while recording, blue while processing, and a compact hairline hexagon at rest.
-- Tap to start/stop; hold to cancel. Recording notification includes Cancel.
+- Tap to start/stop. Hold while recording/processing to cancel; hold the idle bubble
+  for 0.6 seconds to paste the last transcript into the currently focused field.
+  Recording notification includes Cancel.
   Maximum recording: two minutes. Locking the screen cancels recording.
 - Replaces the current selection without dropping surrounding text. If focus,
   text or selection changes, retains the transcript in memory for explicit recovery.
+  A small gold dot marks an unconfirmed insertion. If a field rejects recovery, Hex
+  copies the transcript and tries the editor’s Paste action. The last transcript is
+  kept only in memory until replaced, discarded/copied in Hex, or the process exits.
 - Optional Android **on-device** recognizer; no silent cloud fallback.
 - Private server mode over **Tailscale HTTPS**, with an additional bearer token.
 - Six checksum-verified server model downloads, including **Parakeet Unified
@@ -24,8 +29,9 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
   at a time. The server preloads the last prepared model at startup.
 - Focus-triggered preflight opens the server connection and warms the selected model
   before audio arrives. After idle, a synthetic silent warmup wakes the GPU.
-- A tiny non-focusable recording shim preserves editor/keyboard focus; cancelled or
-  interrupted startup requests cannot start a later microphone session.
+- Recording starts directly from the accessibility bubble. No temporary activity
+  opens, so the editor stays resumed and the keyboard keeps its focus. Cancelled
+  startup requests cannot start a later microphone session.
 
 This is a first functional port of the interaction and visual language, not the
 full desktop application. The server transcribes after recording stops. Live
@@ -92,11 +98,14 @@ run `tailscale serve --https=8444 off` to remove only this service's route.
 3. Choose offline phone recognition, or save the server URL and token and pick a model.
 4. Open **Bubble appearance** to customize the blip and recording bar.
 5. Open a normal text field in another app and tap the bubble. Tap again to finish.
+6. If the text did not arrive, focus the intended field and hold the idle bubble.
+   If Hex says it copied the text, use that field’s normal **Paste** command.
+   **Recover last transcript** in Hex also offers Copy and Discard.
 
 Accessibility sees the focused field and cursor so it can insert text. Field
 contents are never sent to the server. Password fields are excluded. Some custom
 editors and WebViews do not expose the needed accessibility actions. The current
-`ACTION_SET_TEXT` fallback may not preserve rich-text formatting. There is no
+`ACTION_SET_TEXT` replacement may not preserve rich-text formatting. There is no
 claim of compatibility with every app.
 
 ## Tests
@@ -111,7 +120,8 @@ suite on an emulator only. Configure its server URL/token first. Tests use a sep
 tests require Parakeet Unified English and Cohere installed on the server. Tests
 exercise focus, selections, empty fields, password exclusion, cancellation,
 microphone foreground-service startup, saved appearance controls and overlay
-resizing, and real model transcription/insertion.
+resizing, editor lifecycle continuity, hold-to-paste recovery, rejected/ignored edits,
+  drag/cancel gestures, and real model transcription/insertion.
 
 The S21 is configured with Hex accessibility and microphone access, Parakeet on
 Godseye, and the private Tailscale endpoint. Wispr Flow is stopped. Both installed
@@ -120,5 +130,6 @@ models passed prerecorded-speech transcription over the phone’s HTTPS connecti
 See [validation](docs/validation.md) for actual results and remaining device checks.
 See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and port differences.
 
-See [latency and keyboard handoff validation](docs/latency-and-handoff.md) for the
-0.1.3 changes and measurements.
+See [reload and recovery validation](docs/reload-and-recovery.md) for 0.1.4, and
+[latency and keyboard handoff validation](docs/latency-and-handoff.md) for the
+previous 0.1.3 changes and measurements.

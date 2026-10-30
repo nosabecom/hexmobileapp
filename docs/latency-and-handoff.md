@@ -1,5 +1,9 @@
 # 0.1.3 — first transcription and keyboard handoff
 
+Historical validation. In [0.1.4](reload-and-recovery.md), the capture activity
+was removed entirely after a new lifecycle test exposed an editor pause/resume
+that the window-focus check below could not detect.
+
 The model used to load on the first transcription, after the recording was already
 finished. Model weights stayed loaded, but each recording created a fresh inference
 session. A clean native runtime measured 16.710 seconds for the first JFK clip;

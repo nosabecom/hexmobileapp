@@ -23,6 +23,7 @@ public class BubbleService extends AccessibilityService {
   private long generation;
   private boolean starting;
   private String bubbleState = "idle";
+  private Runnable hold;
   private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener =
       (prefs, key) -> {
         if ("bubbleSize".equals(key) || "bubbleTransparency".equals(key))
@@ -106,7 +107,7 @@ public class BubbleService extends AccessibilityService {
     bubble = new DotScopeView(this);
     bubbleState = "idle";
     bubble.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
-    bubble.setContentDescription("Hex: tap to dictate; drag to move; hold to cancel");
+    refreshRecovery();
     params =
         new WindowManager.LayoutParams(
             bubbleDimension(56),
@@ -137,32 +138,53 @@ public class BubbleService extends AccessibilityService {
                 },
                 4000);
             try {
-              startActivity(CaptureActivity.intent(this, session));
+              startCapture(session);
             } catch (RuntimeException error) {
-              fail("Could not open the microphone. Tap to retry.");
+              fail("Could not start the microphone. Check microphone access in Hex.");
             }
           }
+        });
+    bubble.setOnLongClickListener(
+        v -> {
+          if (busy) cancel();
+          else retryTranscript();
+          v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+          return true;
         });
     bubble.setOnTouchListener(
         new View.OnTouchListener() {
           float x, y;
           int initialX, initialY;
-          long down;
-          boolean moved;
+          boolean moved, held;
 
           public boolean onTouch(View v, MotionEvent event) {
             switch (event.getActionMasked()) {
               case MotionEvent.ACTION_DOWN:
+                clearHold();
                 x = event.getRawX();
                 y = event.getRawY();
                 initialX = params.x;
                 initialY = params.y;
-                down = SystemClock.elapsedRealtime();
-                moved = false;
+                moved = held = false;
+                boolean cancelOnHold = busy;
+                hold =
+                    () -> {
+                      held = true;
+                      // A result can arrive while the finger is down. A cancellation gesture
+                      // must never turn into a second paste of that newly delivered result.
+                      if (cancelOnHold) {
+                        cancel();
+                        v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                      } else v.performLongClick();
+                    };
+                handler.postDelayed(hold, 600);
                 return true;
               case MotionEvent.ACTION_MOVE:
-                if (Math.hypot(event.getRawX() - x, event.getRawY() - y) > dp(8)) moved = true;
-                if (moved) {
+                if (Math.hypot(event.getRawX() - x, event.getRawY() - y) > dp(8)) {
+                  moved = true;
+                  clearHold();
+                }
+                if (moved && !held) {
                   params.x = initialX + (int) (event.getRawX() - x);
                   params.y = initialY + (int) (event.getRawY() - y);
                   clamp();
@@ -170,22 +192,49 @@ public class BubbleService extends AccessibilityService {
                 }
                 return true;
               case MotionEvent.ACTION_UP:
-                if (moved)
+                clearHold();
+                if (moved && !held)
                   Prefs.get(BubbleService.this)
                       .edit()
                       .putInt("bubbleX", params.x)
                       .putInt("bubbleY", params.y)
                       .apply();
-                else if (SystemClock.elapsedRealtime() - down > 600) cancel();
-                else v.performClick();
+                else if (!held && !moved) v.performClick();
                 return true;
               case MotionEvent.ACTION_CANCEL:
+                clearHold();
                 return true;
             }
             return false;
           }
         });
     wm.addView(bubble, params);
+  }
+
+  private void clearHold() {
+    if (hold != null) handler.removeCallbacks(hold);
+    hold = null;
+  }
+
+  // The enabled accessibility service has the system binding's microphone capability.
+  // Starting directly keeps the editor resumed; even a transparent activity pauses it.
+  void startCapture(long session) {
+    if (!isStarting(session)) return;
+    if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+      fail("Open Hex and allow microphone access first.");
+      return;
+    }
+    startForegroundService(new Intent(this, DictationService.class).putExtra("session", session));
+  }
+
+  void refreshRecovery() {
+    if (bubble == null) return;
+    bubble.recoverable(MainActivity.pendingTranscript != null);
+    if (!busy)
+      bubble.setContentDescription(
+          "Hex: tap to dictate; drag to move; hold to paste last transcript"
+              + (MainActivity.pendingTranscript != null ? "; transcript waiting" : ""));
   }
 
   private void clamp() {
@@ -268,7 +317,8 @@ public class BubbleService extends AccessibilityService {
                       ? "transcribing, hold to cancel"
                       : state.equals("starting")
                           ? "starting microphone, tap to cancel"
-                          : "tap to dictate"));
+                          : "tap to dictate; hold to paste last transcript"));
+      refreshRecovery();
     }
   }
 
@@ -289,25 +339,76 @@ public class BubbleService extends AccessibilityService {
         && Objects.equals(original, fieldText(current))
         && selection(current, true) == start
         && selection(current, false) == end) {
-      TextInsertion.Result edit = TextInsertion.insert(original, start, end, transcript);
-      Bundle args = new Bundle();
-      args.putCharSequence(
-          AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, edit.text());
-      inserted = current.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args);
-      if (inserted) {
-        Bundle selection = new Bundle();
-        selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, edit.cursor());
-        selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, edit.cursor());
-        current.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection);
-      }
+      inserted = insertAtCursor(current, transcript) == Insertion.CONFIRMED;
     }
     if (current != null) current.recycle();
     if (transcript == null || transcript.isBlank()) message("No speech detected. Try again.");
-    else if (!inserted) {
-      MainActivity.pendingTranscript = transcript;
-      message("Field changed or insertion unsupported. Recover your transcript in Hex.");
+    else {
+      MainActivity.lastTranscript = transcript;
+      MainActivity.pendingTranscript = inserted ? null : transcript;
+      if (!inserted) message("Transcript saved. Focus a text field, then hold Hex to paste it.");
     }
     reset();
+  }
+
+  private enum Insertion {
+    CONFIRMED,
+    ACCEPTED,
+    REJECTED
+  }
+
+  private Insertion insertAtCursor(AccessibilityNodeInfo node, String transcript) {
+    String before = fieldText(node);
+    int from = selection(node, true), to = selection(node, false);
+    if (from < 0 || to < 0 || from > before.length() || to > before.length())
+      return Insertion.REJECTED;
+    TextInsertion.Result edit = TextInsertion.insert(before, from, to, transcript);
+    Bundle args = new Bundle();
+    args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, edit.text());
+    if (!node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) return Insertion.REJECTED;
+    // Some web editors acknowledge the action without changing their text. Never paste a
+    // second time automatically after an accepted action: it may still be applied asynchronously.
+    if (!node.refresh() || !Objects.equals(edit.text(), fieldText(node))) return Insertion.ACCEPTED;
+    Bundle cursor = new Bundle();
+    cursor.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, edit.cursor());
+    cursor.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, edit.cursor());
+    node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, cursor);
+    return Insertion.CONFIRMED;
+  }
+
+  void retryTranscript() {
+    if (busy || getSystemService(KeyguardManager.class).isKeyguardLocked()) return;
+    String text = MainActivity.recoveryTranscript();
+    if (text == null || text.isBlank()) {
+      message("No transcript to paste yet. Tap Hex to dictate.");
+      return;
+    }
+    AccessibilityNodeInfo current = focused();
+    try {
+      if (!eligible(current)) {
+        message("Focus a text field, then hold Hex to paste.");
+        return;
+      }
+      Insertion result = insertAtCursor(current, text);
+      if (result == Insertion.CONFIRMED) {
+        MainActivity.pendingTranscript = null;
+        message("Transcript pasted.");
+      } else {
+        // Clipboard use is limited to this explicit recovery gesture, never automatic dictation.
+        MainActivity.copyTranscript(this, text);
+        boolean pasted =
+            result == Insertion.REJECTED
+                && current.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+        MainActivity.pendingTranscript = text;
+        message(
+            pasted
+                ? "Paste requested. Your transcript is also copied if needed."
+                : "Transcript copied. Use Paste in this field.");
+      }
+      refreshRecovery();
+    } finally {
+      if (current != null) current.recycle();
+    }
   }
 
   void fail(String message) {
@@ -316,7 +417,6 @@ public class BubbleService extends AccessibilityService {
   }
 
   void cancel() {
-    CaptureActivity.dismiss();
     DictationService.cancelCapture();
     reset();
   }
@@ -340,6 +440,7 @@ public class BubbleService extends AccessibilityService {
   }
 
   private void hide() {
+    clearHold();
     if (bubble != null) {
       wm.removeView(bubble);
       bubble = null;

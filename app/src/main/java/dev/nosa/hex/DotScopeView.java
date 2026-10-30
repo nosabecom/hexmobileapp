@@ -31,6 +31,13 @@ public final class DotScopeView extends View {
   private long last;
   private float appearanceScale = 1;
   private String state = "idle";
+  private boolean recoverable;
+
+  void recoverable(boolean value) {
+    recoverable = value;
+    invalidate();
+  }
+
   private final RectF plate = new RectF();
   private final Path hex = new Path(), clip = new Path();
 
@@ -135,6 +142,10 @@ public final class DotScopeView extends View {
       paint.setStrokeWidth(.9f);
       canvas.drawPath(hex, paint);
       paint.setStyle(Paint.Style.FILL);
+      if (recoverable) {
+        paint.setColor(0xffdfc18b);
+        canvas.drawCircle(10, -8, 2, paint);
+      }
     } else {
       canvas.save();
       clip.reset();

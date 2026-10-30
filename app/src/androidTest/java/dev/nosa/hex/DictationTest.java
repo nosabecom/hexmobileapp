@@ -63,7 +63,7 @@ public class DictationTest {
     instrumentation.runOnMainSync(
         () -> {
           BubbleService.instance.cancel();
-          MainActivity.pendingTranscript = null;
+          MainActivity.pendingTranscript = MainActivity.lastTranscript = null;
         });
     context.startActivity(
         new Intent()
@@ -133,6 +133,157 @@ public class DictationTest {
 
   private void deliver(String s) {
     instrumentation.runOnMainSync(() -> BubbleService.instance.deliver(s));
+  }
+
+  private void openEditorMode(String mode) throws Exception {
+    context.startActivity(
+        new Intent()
+            .setComponent(
+                new ComponentName("dev.nosa.hexfixture", "dev.nosa.hexfixture.FieldsActivity"))
+            .putExtra("editorMode", mode)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
+    waitFor(() -> find("First field") != null, 4000);
+    Thread.sleep(600);
+  }
+
+  private void holdBubble(boolean drag, boolean cancelTouch) throws Exception {
+    waitFor(() -> overlayWidth() > 0, 4000);
+    android.graphics.Rect bounds = new android.graphics.Rect();
+    for (var window : ui.getWindows()) {
+      if (window.getType()
+          == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY)
+        window.getBoundsInScreen(bounds);
+      window.recycle();
+    }
+    long down = SystemClock.uptimeMillis();
+    touch(down, android.view.MotionEvent.ACTION_DOWN, bounds.centerX(), bounds.centerY());
+    if (drag)
+      touch(down, android.view.MotionEvent.ACTION_MOVE, bounds.centerX() - 80, bounds.centerY());
+    if (cancelTouch)
+      touch(down, android.view.MotionEvent.ACTION_CANCEL, bounds.centerX(), bounds.centerY());
+    Thread.sleep(850);
+    if (!cancelTouch)
+      touch(
+          down,
+          android.view.MotionEvent.ACTION_UP,
+          bounds.centerX() - (drag ? 80 : 0),
+          bounds.centerY());
+    Thread.sleep(200);
+  }
+
+  private void touch(long down, int action, int x, int y) {
+    var event = android.view.MotionEvent.obtain(down, SystemClock.uptimeMillis(), action, x, y, 0);
+    event.setSource(android.view.InputDevice.SOURCE_TOUCHSCREEN);
+    assertTrue(ui.injectInputEvent(event, true));
+    event.recycle();
+  }
+
+  @Test
+  public void holdRecoversIntoCurrentFieldWithoutStartingMicrophone() throws Exception {
+    begin();
+    focus("Second field");
+    deliver("Recovered words");
+    String lifecycle = text("Lifecycle status");
+    holdBubble(false, false);
+    assertEquals("Recovered words", text("Second field"));
+    assertEquals("Hello world", text("First field"));
+    assertNull(MainActivity.pendingTranscript);
+    assertFalse(BubbleService.instance.isCurrentSession(BubbleService.instance.sessionId()));
+    assertEquals(lifecycle, text("Lifecycle status"));
+  }
+
+  @Test
+  public void holdFallsBackToEditorsPasteAction() throws Exception {
+    openEditorMode("pasteOnly");
+    begin();
+    deliver("Nosa");
+    assertEquals("Nosa", MainActivity.pendingTranscript);
+    holdBubble(false, false);
+    waitFor(() -> text("First field").equals("Hello Nosa"), 2000);
+    assertFalse(BubbleService.instance.isCurrentSession(BubbleService.instance.sessionId()));
+  }
+
+  @Test
+  public void failedRecoveryRetainsTranscriptAndDoesNotReplaceText() throws Exception {
+    openEditorMode("reject");
+    begin();
+    deliver("Keep these words");
+    holdBubble(false, false);
+    assertEquals("Hello world", text("First field"));
+    assertEquals("Keep these words", MainActivity.pendingTranscript);
+    focus("Second field");
+    holdBubble(false, false);
+    assertEquals("Keep these words", text("Second field"));
+    assertNull(MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void acknowledgedButIgnoredEditCanStillBeRecovered() throws Exception {
+    openEditorMode("ignore");
+    begin();
+    deliver("Saved words");
+    assertEquals("Hello world", text("First field"));
+    assertEquals("Saved words", MainActivity.pendingTranscript);
+    focus("Second field");
+    holdBubble(false, false);
+    assertEquals("Saved words", text("Second field"));
+  }
+
+  @Test
+  public void holdAfterSuccessfulInsertionCanPasteLastTranscriptElsewhere() throws Exception {
+    begin();
+    deliver("Nosa");
+    assertNull(MainActivity.pendingTranscript);
+    focus("Second field");
+    holdBubble(false, false);
+    assertEquals("Nosa", text("Second field"));
+    assertEquals("Hello Nosa", text("First field"));
+  }
+
+  @Test
+  public void dragAndCancelledTouchNeverPasteOrStartRecording() throws Exception {
+    begin();
+    focus("Second field");
+    deliver("Waiting words");
+    int x = Prefs.get(context).getInt("bubbleX", -1), y = Prefs.get(context).getInt("bubbleY", -1);
+    try {
+      holdBubble(true, false);
+      holdBubble(false, true);
+      assertEquals("", text("Second field"));
+      assertEquals("Waiting words", MainActivity.pendingTranscript);
+      assertFalse(BubbleService.instance.isCurrentSession(BubbleService.instance.sessionId()));
+    } finally {
+      Prefs.get(context).edit().putInt("bubbleX", x).putInt("bubbleY", y).commit();
+    }
+  }
+
+  @Test
+  public void holdToCancelCannotBecomePasteWhenResultArrives() throws Exception {
+    begin();
+    android.graphics.Rect bounds = new android.graphics.Rect();
+    for (var window : ui.getWindows()) {
+      if (window.getType()
+          == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY)
+        window.getBoundsInScreen(bounds);
+      window.recycle();
+    }
+    long down = SystemClock.uptimeMillis();
+    touch(down, android.view.MotionEvent.ACTION_DOWN, bounds.centerX(), bounds.centerY());
+    deliver("Nosa");
+    Thread.sleep(850);
+    touch(down, android.view.MotionEvent.ACTION_UP, bounds.centerX(), bounds.centerY());
+    assertEquals("Hello Nosa", text("First field"));
+    assertNull(MainActivity.pendingTranscript);
+    assertFalse(BubbleService.instance.isCurrentSession(BubbleService.instance.sessionId()));
+  }
+
+  @Test
+  public void recoveryNeverWritesPasswordField() throws Exception {
+    MainActivity.pendingTranscript = "Private words";
+    focus("Password field");
+    instrumentation.runOnMainSync(() -> BubbleService.instance.retryTranscript());
+    assertEquals("Private words", MainActivity.pendingTranscript);
+    assertEquals("", text("Password field"));
   }
 
   @Test
@@ -309,6 +460,7 @@ public class DictationTest {
     Prefs.get(context).edit().putBoolean("local", false).commit();
     find("First field").performAction(AccessibilityNodeInfo.ACTION_CLICK);
     waitFor(() -> keyboardVisible(), 4000);
+    String lifecycleBefore = text("Lifecycle status");
     try {
       android.graphics.Rect bounds = new android.graphics.Rect();
       for (var window : ui.getWindows()) {
@@ -338,7 +490,7 @@ public class DictationTest {
             var root = window.getRoot();
             if (root != null) {
               assertEquals(
-                  "Microphone shim stole window focus",
+                  "Recording stole window focus",
                   "dev.nosa.hexfixture",
                   String.valueOf(root.getPackageName()));
               root.recycle();
@@ -355,6 +507,10 @@ public class DictationTest {
         services = new String(in.readAllBytes());
       }
       assertTrue("Microphone must be recording", services.contains("isForeground=true"));
+      assertEquals(
+          "Starting the microphone must not pause/resume the editor",
+          lifecycleBefore,
+          text("Lifecycle status"));
       instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
       assertEquals("Hello world", text("First field"));
       var field = find("First field");
@@ -393,10 +549,9 @@ public class DictationTest {
     instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
     begin();
     long fresh = BubbleService.instance.sessionId();
-    context.startActivity(CaptureActivity.intent(context, stale));
+    instrumentation.runOnMainSync(() -> BubbleService.instance.startCapture(stale));
     Thread.sleep(700);
     assertTrue(BubbleService.instance.isStarting(fresh));
-    assertNull(CaptureActivity.active);
     instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
     assertNotNull(find("First field"));
   }
@@ -405,7 +560,8 @@ public class DictationTest {
   public void microphoneStartsFromBubbleAndCancels() throws Exception {
     Prefs.get(context).edit().putBoolean("local", false).commit();
     begin();
-    context.startActivity(CaptureActivity.intent(context, BubbleService.instance.sessionId()));
+    instrumentation.runOnMainSync(
+        () -> BubbleService.instance.startCapture(BubbleService.instance.sessionId()));
     Thread.sleep(2500);
     String services =
         new String(
@@ -417,6 +573,62 @@ public class DictationTest {
     instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
     Thread.sleep(600);
     assertEquals("Hello world", text("First field"));
+  }
+
+  @Test
+  public void selectedModelLatencyOverPhoneConnection() throws Exception {
+    byte[] audio;
+    try (var in = instrumentation.getContext().getAssets().open("jfk.wav")) {
+      audio = in.readAllBytes();
+    }
+    String model = Prefs.get(context).getString("model", "parakeet_unified_en");
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      long started = SystemClock.elapsedRealtime();
+      var conn =
+          (java.net.HttpURLConnection)
+              new java.net.URI(Prefs.endpoint(context) + "/transcribe").toURL().openConnection();
+      conn.setConnectTimeout(10000);
+      conn.setReadTimeout(90000);
+      conn.setRequestMethod("POST");
+      conn.setRequestProperty("Authorization", "Bearer " + Prefs.token(context));
+      conn.setRequestProperty("X-Hex-Model", model);
+      conn.setRequestProperty("Content-Type", "audio/wav");
+      conn.setDoOutput(true);
+      conn.setFixedLengthStreamingMode(audio.length);
+      try {
+        try (var out = conn.getOutputStream()) {
+          out.write(audio);
+        }
+        long uploaded = SystemClock.elapsedRealtime();
+        assertEquals(200, conn.getResponseCode());
+        org.json.JSONObject result;
+        try (var in = conn.getInputStream()) {
+          result =
+              new org.json.JSONObject(
+                  new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+        }
+        Bundle timing = new Bundle();
+        timing.putString(
+            "stream",
+            "\n"
+                + model
+                + " attempt="
+                + attempt
+                + " audio_bytes="
+                + audio.length
+                + " upload_call_ms="
+                + (uploaded - started)
+                + " request_ms="
+                + (SystemClock.elapsedRealtime() - started)
+                + " server_ms="
+                + result.getLong("server_ms")
+                + "\n");
+        instrumentation.sendStatus(0, timing);
+        assertTrue(result.getString("text").toLowerCase(Locale.US).contains("country"));
+      } finally {
+        conn.disconnect();
+      }
+    }
   }
 
   @Test

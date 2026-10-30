@@ -20,7 +20,24 @@ public class MainActivity extends Activity {
   private TextView status;
   private EditText endpoint, token;
   private Switch local;
-  static volatile String pendingTranscript;
+  static volatile String pendingTranscript, lastTranscript;
+
+  static String recoveryTranscript() {
+    return pendingTranscript != null ? pendingTranscript : lastTranscript;
+  }
+
+  static void copyTranscript(Context context, String text) {
+    ClipData clip = ClipData.newPlainText("Hex transcript", text);
+    android.os.PersistableBundle extras = new android.os.PersistableBundle();
+    extras.putBoolean("android.content.extra.IS_SENSITIVE", true);
+    clip.getDescription().setExtras(extras);
+    context.getSystemService(ClipboardManager.class).setPrimaryClip(clip);
+  }
+
+  private void clearRecovery() {
+    pendingTranscript = lastTranscript = null;
+    if (BubbleService.instance != null) BubbleService.instance.refreshRecovery();
+  }
 
   int dp(int n) {
     return (int) (n * getResources().getDisplayMetrics().density);
@@ -147,11 +164,11 @@ public class MainActivity extends Activity {
                     })
                 .start());
     button(
-        "Recover last uninserted transcript",
+        "Recover last transcript",
         () -> {
-          String text = pendingTranscript;
+          String text = recoveryTranscript();
           if (text == null) {
-            toast("No uninserted transcript");
+            toast("No transcript to recover");
             return;
           }
           new AlertDialog.Builder(this)
@@ -160,11 +177,10 @@ public class MainActivity extends Activity {
               .setPositiveButton(
                   "Copy",
                   (d, w) -> {
-                    getSystemService(ClipboardManager.class)
-                        .setPrimaryClip(ClipData.newPlainText("Hex transcript", text));
-                    pendingTranscript = null;
+                    copyTranscript(this, text);
+                    clearRecovery();
                   })
-              .setNegativeButton("Discard", (d, w) -> pendingTranscript = null)
+              .setNegativeButton("Discard", (d, w) -> clearRecovery())
               .show();
         });
     label(

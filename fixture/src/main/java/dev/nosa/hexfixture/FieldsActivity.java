@@ -6,6 +6,23 @@ import android.text.InputType;
 import android.widget.*;
 
 public class FieldsActivity extends Activity {
+  private TextView lifecycle;
+  private int resumes, pauses;
+
+  @Override
+  protected void onResume() {
+    super.onResume();
+    resumes++;
+    lifecycle.setText("Resumes " + resumes + ", pauses " + pauses);
+  }
+
+  @Override
+  protected void onPause() {
+    pauses++;
+    lifecycle.setText("Resumes " + resumes + ", pauses " + pauses);
+    super.onPause();
+  }
+
   @Override
   public void onCreate(Bundle b) {
     super.onCreate(b);
@@ -17,7 +34,23 @@ public class FieldsActivity extends Activity {
     title.setText("Hex · cross-app test fields");
     title.setTextSize(24);
     layout.addView(title);
-    EditText first = new EditText(this);
+    lifecycle = new TextView(this);
+    lifecycle.setContentDescription("Lifecycle status");
+    layout.addView(lifecycle);
+    String mode = getIntent().getStringExtra("editorMode");
+    EditText first =
+        new EditText(this) {
+          @Override
+          public boolean performAccessibilityAction(int action, Bundle arguments) {
+            if (action == android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT) {
+              if ("ignore".equals(mode)) return true;
+              if ("pasteOnly".equals(mode) || "reject".equals(mode)) return false;
+            }
+            if (action == android.view.accessibility.AccessibilityNodeInfo.ACTION_PASTE
+                && "reject".equals(mode)) return false;
+            return super.performAccessibilityAction(action, arguments);
+          }
+        };
     first.setText("Hello world");
     first.setContentDescription("First field");
     layout.addView(first);
