@@ -307,6 +307,8 @@ public class DictationTest {
     waitFor(() -> find("First field") != null, 4000);
     waitFor(() -> overlayWidth() > 0, 4000);
     Prefs.get(context).edit().putBoolean("local", false).commit();
+    find("First field").performAction(AccessibilityNodeInfo.ACTION_CLICK);
+    waitFor(() -> keyboardVisible(), 4000);
     try {
       android.graphics.Rect bounds = new android.graphics.Rect();
       for (var window : ui.getWindows()) {
@@ -326,7 +328,26 @@ public class DictationTest {
         assertTrue(ui.injectInputEvent(event, true));
         event.recycle();
       }
-      Thread.sleep(2000);
+      long until = SystemClock.uptimeMillis() + 1500;
+      while (SystemClock.uptimeMillis() < until) {
+        assertTrue("Keyboard disappeared during the microphone handoff", keyboardVisible());
+        for (var window : ui.getWindows()) {
+          if (window.isFocused()
+              && window.getType()
+                  == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION) {
+            var root = window.getRoot();
+            if (root != null) {
+              assertEquals(
+                  "Microphone shim stole window focus",
+                  "dev.nosa.hexfixture",
+                  String.valueOf(root.getPackageName()));
+              root.recycle();
+            }
+          }
+          window.recycle();
+        }
+        Thread.sleep(15);
+      }
       assertNotNull("Tapping Hex must keep the original app in front", find("First field"));
       String services;
       try (var fd = ui.executeShellCommand("dumpsys activity services dev.nosa.hex");
@@ -336,6 +357,13 @@ public class DictationTest {
       assertTrue("Microphone must be recording", services.contains("isForeground=true"));
       instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
       assertEquals("Hello world", text("First field"));
+      var field = find("First field");
+      Bundle selection = new Bundle();
+      selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 6);
+      selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, 11);
+      field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection);
+      field.recycle();
+      Thread.sleep(100);
       begin();
       deliver("Nosa");
       waitFor(() -> text("First field").equals("Hello Nosa"), 3000);
@@ -348,12 +376,36 @@ public class DictationTest {
     }
   }
 
+  private boolean keyboardVisible() {
+    boolean visible = false;
+    for (var window : ui.getWindows()) {
+      if (window.getType() == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD)
+        visible = true;
+      window.recycle();
+    }
+    return visible;
+  }
+
+  @Test
+  public void cancelledStartupCannotStartMicrophoneOrCancelNewSession() throws Exception {
+    begin();
+    long stale = BubbleService.instance.sessionId();
+    instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+    begin();
+    long fresh = BubbleService.instance.sessionId();
+    context.startActivity(CaptureActivity.intent(context, stale));
+    Thread.sleep(700);
+    assertTrue(BubbleService.instance.isStarting(fresh));
+    assertNull(CaptureActivity.active);
+    instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+    assertNotNull(find("First field"));
+  }
+
   @Test
   public void microphoneStartsFromBubbleAndCancels() throws Exception {
     Prefs.get(context).edit().putBoolean("local", false).commit();
     begin();
-    context.startActivity(
-        new Intent(context, CaptureActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+    context.startActivity(CaptureActivity.intent(context, BubbleService.instance.sessionId()));
     Thread.sleep(2500);
     String services =
         new String(
@@ -373,15 +425,27 @@ public class DictationTest {
     try (var in = instrumentation.getContext().getAssets().open("jfk.wav")) {
       audio = in.readAllBytes();
     }
-    for (String model : new String[] {"parakeet_unified_en", "cohere_transcribe"}) {
-      Prefs.get(context).edit().putString("model", model).commit();
-      if (model.equals("parakeet_unified_en")) begin();
-      String result = RemoteTranscriber.transcribe(context, audio);
-      assertTrue(model + ": " + result, result.toLowerCase(Locale.US).contains("country"));
-      if (model.equals("parakeet_unified_en")) {
-        deliver(result);
-        waitFor(() -> text("First field").toLowerCase(Locale.US).contains("country"), 4000);
+    String selected = Prefs.get(context).getString("model", "parakeet_unified_en");
+    try {
+      for (String model : new String[] {"parakeet_unified_en", "cohere_transcribe"}) {
+        Prefs.get(context).edit().putString("model", model).commit();
+        if (model.equals("parakeet_unified_en")) begin();
+        long started = SystemClock.elapsedRealtime();
+        String result = RemoteTranscriber.transcribe(context, audio);
+        Bundle timing = new Bundle();
+        timing.putString(
+            "stream",
+            "\n" + model + " request_ms=" + (SystemClock.elapsedRealtime() - started) + "\n");
+        instrumentation.sendStatus(0, timing);
+        assertTrue(model + ": " + result, result.toLowerCase(Locale.US).contains("country"));
+        if (model.equals("parakeet_unified_en")) {
+          deliver(result);
+          waitFor(() -> text("First field").toLowerCase(Locale.US).contains("country"), 4000);
+        }
       }
+    } finally {
+      Prefs.get(context).edit().putString("model", selected).commit();
+      RemoteTranscriber.prepareInBackground(context);
     }
   }
 }

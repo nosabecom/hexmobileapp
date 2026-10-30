@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import threading
+import time
 import urllib.request
 import wave
 
@@ -25,6 +26,10 @@ class ModelStore:
         self.progress = {}
         self.lock = threading.Lock()
         self.engine = None; self.loaded = None
+        self.session = None
+        self.last_compute = 0
+        self.compute = threading.RLock()
+        self.state_file = self.directory / "active-model.json"
 
     def definition(self, model_id):
         for model in CATALOG:
@@ -64,22 +69,59 @@ class ModelStore:
         finally:
             self.lock.release()
 
+    def preferred(self, fallback):
+        try:
+            model_id = json.loads(self.state_file.read_text())["model"]
+            return model_id if self.installed(self.definition(model_id)) else fallback
+        except (OSError, ValueError, KeyError, TypeError):
+            return fallback
+
+    def prepare(self, model_id):
+        """Serialize with inference. Retain weights, GPU buffers and a reusable session."""
+        with self.compute:
+            if self.loaded == model_id and self.session is not None:
+                if time.monotonic() - self.last_compute > 60:
+                    self.session.run(array.array('f', [0.0]) * 16000, language='en')
+                    self.last_compute = time.monotonic()
+                return False
+            model = self.definition(model_id)
+            if not self.installed(model):
+                raise ValueError('Download this model first')
+            import transcribe_cpp
+            self.close()
+            try:
+                self.engine = transcribe_cpp.Model(str(self.path(model)), backend=self.backend)
+                self.session = self.engine.session()
+                # Exercise the kernels before the first recording arrives. Never use user audio.
+                self.session.run(array.array('f', [0.0]) * 16000, language='en')
+                self.last_compute = time.monotonic()
+                self.loaded = model_id
+                temporary = self.state_file.with_suffix('.tmp')
+                temporary.write_text(json.dumps({'model': model_id}))
+                temporary.replace(self.state_file)
+                return True
+            except Exception:
+                self.close()
+                raise
+
+    def close(self):
+        with self.compute:
+            if self.session is not None:
+                self.session.close(); self.session = None
+            if self.engine is not None:
+                self.engine.close(); self.engine = None
+            self.loaded = None
+
     def __call__(self, data, model_id):
-        model = self.definition(model_id)
-        if not self.installed(model): raise ValueError('Download this model first')
-        import transcribe_cpp
-        if self.loaded != model_id:
-            if self.engine is not None: self.engine.close(); self.engine=None; self.loaded=None
-            self.engine = transcribe_cpp.Model(str(self.path(model)), backend=self.backend)
-            self.loaded = model_id
-        with wave.open(io.BytesIO(data)) as audio:
-            pcm = array.array('h', audio.readframes(audio.getnframes()))
-        floats = array.array('f', (sample / 32768 for sample in pcm))
-        # Cohere's reference window is 35s. Bound all requests to 30s chunks;
-        # avoid feeding arbitrarily long clips to fixed-window models.
-        chunks = []
-        with self.engine.session() as session:
+        with self.compute:
+            self.prepare(model_id)
+            with wave.open(io.BytesIO(data)) as audio:
+                pcm = array.array('h', audio.readframes(audio.getnframes()))
+            floats = array.array('f', (sample / 32768 for sample in pcm))
+            chunks = []
+            # Each batch run replaces the result; no user audio/transcript is used as a prompt.
             for offset in range(0, len(floats), 30 * 16000):
-                result = session.run(floats[offset:offset + 30 * 16000], language='en')
+                result = self.session.run(floats[offset:offset + 30 * 16000], language='en')
                 chunks.append(result.text.strip())
-        return ' '.join(chunks).strip()
+            self.last_compute = time.monotonic()
+            return ' '.join(chunks).strip()

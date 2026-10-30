@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hex_server import make_server, validate_wav, MAX_BYTES
 from model_store import ModelStore, CATALOG
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
 
 
 def wav(level=0, rate=16000):
@@ -73,6 +74,64 @@ class ModelStoreTests(unittest.TestCase):
                 with self.assertRaises(ValueError): store.download('parakeet_unified_en')
             self.assertFalse(store.installed(CATALOG[0]))
             self.assertIn('failed',store.progress['parakeet_unified_en'])
+
+
+class PreparationTests(unittest.TestCase):
+    def test_reuses_session_and_closes_before_switch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ModelStore(directory)
+            engines = []
+            def make_model(*args, **kwargs):
+                engine = MagicMock()
+                engine.session.return_value.run.return_value.text = 'fresh result'
+                engines.append(engine)
+                return engine
+            with patch.dict(sys.modules, {'transcribe_cpp': SimpleNamespace(Model=make_model)}), patch.object(store, 'installed', return_value=True):
+                self.assertTrue(store.prepare('parakeet_unified_en'))
+                self.assertFalse(store.prepare('parakeet_unified_en'))
+                self.assertEqual(store(wav(1000), 'parakeet_unified_en'), 'fresh result')
+                self.assertEqual(store(wav(1000), 'parakeet_unified_en'), 'fresh result')
+                self.assertEqual(len(engines), 1)
+                self.assertEqual(engines[0].session.call_count, 1)
+                self.assertEqual(engines[0].session.return_value.run.call_count, 3)
+                store.last_compute -= 61
+                store.prepare('parakeet_unified_en')
+                self.assertEqual(engines[0].session.return_value.run.call_count, 4)
+                self.assertEqual(len(engines), 1)
+                store.prepare('cohere_transcribe')
+                engines[0].session.return_value.close.assert_called_once()
+                engines[0].close.assert_called_once()
+                self.assertEqual(store.preferred('parakeet_unified_en'), 'cohere_transcribe')
+                store.close()
+
+    def test_failed_preparation_is_retryable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ModelStore(directory)
+            engine = MagicMock()
+            engine.session.return_value.run.side_effect = RuntimeError('GPU not ready')
+            with patch.dict(sys.modules, {'transcribe_cpp': SimpleNamespace(Model=lambda *a, **kw: engine)}), patch.object(store, 'installed', return_value=True):
+                with self.assertRaises(RuntimeError): store.prepare('parakeet_unified_en')
+                self.assertIsNone(store.loaded)
+                self.assertIsNone(store.session)
+                engine.session.return_value.run.side_effect = None
+                self.assertTrue(store.prepare('parakeet_unified_en'))
+                store.close()
+
+    def test_authenticated_prepare_endpoint_and_readiness(self):
+        store = MagicMock(); store.loaded = None; store.prepare.return_value = True
+        server = make_server('127.0.0.1', 0, 'test-only', None, 'parakeet_unified_en', store)
+        thread = threading.Thread(target=server.serve_forever, daemon=True); thread.start()
+        try:
+            for token, expected in [('wrong', 401), ('test-only', 200)]:
+                c = http.client.HTTPConnection(*server.server_address)
+                c.request('POST', '/prepare', headers={'Authorization':'Bearer '+token, 'X-Hex-Model':'parakeet_unified_en'})
+                r = c.getresponse(); self.assertEqual(r.status, expected); r.read(); c.close()
+            store.prepare.assert_called_once_with('parakeet_unified_en')
+            c = http.client.HTTPConnection(*server.server_address)
+            c.request('GET','/health',headers={'Authorization':'Bearer test-only'})
+            r = c.getresponse(); self.assertIn(b'"ready": false', r.read()); c.close()
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
 
 
 if __name__ == '__main__': unittest.main()

@@ -2,27 +2,53 @@ package dev.nosa.hex;
 
 import android.Manifest;
 import android.app.Activity;
-import android.content.Intent;
+import android.content.*;
 import android.content.pm.PackageManager;
+import android.os.Bundle;
+import android.view.*;
 
-/**
- * A visible activity starts the microphone service, satisfying Android's while-in-use rule. It has
- * no task affinity: bringing the settings task forward would steal the dictation target.
- */
+/** One-pixel, non-focusable activity satisfies Android's visible microphone-start rule. */
 public class CaptureActivity extends Activity {
   static CaptureActivity active;
-  private boolean started;
+  private boolean dispatched;
+  private long session;
+
+  static Intent intent(Context context, long session) {
+    return new Intent(context, CaptureActivity.class)
+        .putExtra("session", session)
+        .addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+  }
+
+  @Override
+  protected void onCreate(Bundle state) {
+    super.onCreate(state);
+    session = getIntent().getLongExtra("session", -1);
+    Window window = getWindow();
+    window.addFlags(
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE);
+    window.setGravity(Gravity.TOP | Gravity.START);
+    window.setLayout(1, 1);
+    window.setWindowAnimations(0);
+  }
 
   @Override
   protected void onResume() {
     super.onResume();
     active = this;
-    if (started) return;
-    started = true;
+    BubbleService owner = BubbleService.instance;
+    if (owner == null || !owner.isStarting(session)) {
+      closeCapture();
+      return;
+    }
+    if (dispatched) return;
+    dispatched = true;
     if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
         != PackageManager.PERMISSION_GRANTED) {
-      if (BubbleService.instance != null)
-        BubbleService.instance.fail("Open Hex and allow microphone access first.");
+      owner.fail("Open Hex and allow microphone access first.");
       closeCapture();
       return;
     }
@@ -30,13 +56,16 @@ public class CaptureActivity extends Activity {
         .getDecorView()
         .post(
             () -> {
-              if (isFinishing() || isDestroyed()) return;
+              if (isFinishing() || isDestroyed() || !owner.isStarting(session)) {
+                closeCapture();
+                return;
+              }
               try {
-                startForegroundService(new Intent(this, DictationService.class));
-              } catch (RuntimeException e) {
-                if (BubbleService.instance != null)
-                  BubbleService.instance.fail(
-                      "Android could not start the microphone. Open Hex and try again.");
+                startForegroundService(
+                    new Intent(this, DictationService.class).putExtra("session", session));
+              } catch (RuntimeException error) {
+                if (owner.isCurrentSession(session))
+                  owner.fail("Could not start the microphone. Tap to retry.");
                 closeCapture();
               }
             });
@@ -46,9 +75,21 @@ public class CaptureActivity extends Activity {
     if (active != null) active.closeCapture();
   }
 
+  static void dismiss(long session) {
+    if (active != null && active.session == session) active.closeCapture();
+  }
+
   private void closeCapture() {
+    if (isFinishing()) return;
     finishAndRemoveTask();
     overridePendingTransition(0, 0);
+  }
+
+  @Override
+  protected void onStop() {
+    super.onStop();
+    BubbleService owner = BubbleService.instance;
+    if (owner != null && owner.isStarting(session)) owner.cancel();
   }
 
   @Override

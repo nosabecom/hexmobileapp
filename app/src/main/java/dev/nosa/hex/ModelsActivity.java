@@ -165,6 +165,7 @@ public class ModelsActivity extends Activity {
           v -> {
             if (installed) {
               Prefs.get(this).edit().putString("model", id).putBoolean("local", false).apply();
+              RemoteTranscriber.prepareInBackground(this);
               render(models);
             } else {
               action.setEnabled(false);

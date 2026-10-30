@@ -20,6 +20,8 @@ public class BubbleService extends AccessibilityService {
   private String original;
   private int start, end;
   private boolean busy;
+  private long generation;
+  private boolean starting;
   private String bubbleState = "idle";
   private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener =
       (prefs, key) -> {
@@ -100,6 +102,7 @@ public class BubbleService extends AccessibilityService {
 
   private void show() {
     if (bubble != null) return;
+    RemoteTranscriber.prepareInBackground(this);
     bubble = new DotScopeView(this);
     bubbleState = "idle";
     bubble.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
@@ -120,14 +123,24 @@ public class BubbleService extends AccessibilityService {
     bubble.setOnClickListener(
         v -> {
           if (busy) {
-            DictationService.stopCapture();
+            if (starting) cancel();
+            else DictationService.stopCapture();
           } else if (captureTarget()) {
-            startActivity(
-                new Intent(this, CaptureActivity.class)
-                    .addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK
-                            | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
-                            | Intent.FLAG_ACTIVITY_NO_ANIMATION));
+            long session = generation;
+            RemoteTranscriber.prepareInBackground(this);
+            handler.postDelayed(
+                () -> {
+                  if (isStarting(session)) {
+                    cancel();
+                    message("Microphone did not start. Tap to retry.");
+                  }
+                },
+                4000);
+            try {
+              startActivity(CaptureActivity.intent(this, session));
+            } catch (RuntimeException error) {
+              fail("Could not open the microphone. Tap to retry.");
+            }
           }
         });
     bubble.setOnTouchListener(
@@ -217,13 +230,33 @@ public class BubbleService extends AccessibilityService {
       return false;
     }
     busy = true;
-    state("…");
+    starting = true;
+    generation = SystemClock.elapsedRealtimeNanos();
+    state("starting");
     return true;
   }
 
+  long sessionId() {
+    return generation;
+  }
+
+  boolean isCurrentSession(long session) {
+    return busy
+        && generation == session
+        && !getSystemService(KeyguardManager.class).isKeyguardLocked();
+  }
+
+  boolean isStarting(long session) {
+    return isCurrentSession(session) && starting;
+  }
+
   void state(String text) {
+    if (text.equals("■")) starting = false;
     if (bubble != null) {
-      String state = text.equals("■") ? "recording" : text.equals("…") ? "processing" : "idle";
+      String state =
+          text.equals("■")
+              ? "recording"
+              : text.equals("…") ? "processing" : text.equals("starting") ? "starting" : "idle";
       bubbleState = state;
       refreshAppearance();
       bubble.state(state);
@@ -233,7 +266,9 @@ public class BubbleService extends AccessibilityService {
                   ? "recording, tap to stop"
                   : state.equals("processing")
                       ? "transcribing, hold to cancel"
-                      : "tap to dictate"));
+                      : state.equals("starting")
+                          ? "starting microphone, tap to cancel"
+                          : "tap to dictate"));
     }
   }
 
@@ -288,6 +323,7 @@ public class BubbleService extends AccessibilityService {
 
   private void reset() {
     busy = false;
+    starting = false;
     clearTarget();
     state("✦");
     handler.postDelayed(refresh, 150);

@@ -17,6 +17,8 @@ public class DictationService extends Service implements RecognitionListener {
   private SpeechRecognizer recognizer;
   private AudioRecord recorder;
   private boolean finishing;
+  private long session;
+  private BubbleService owner;
   private final Runnable timeout = () -> stopRecording();
 
   static void stopCapture() {
@@ -34,7 +36,20 @@ public class DictationService extends Service implements RecognitionListener {
       else cancel();
       return START_NOT_STICKY;
     }
-    if (instance != null) return START_NOT_STICKY;
+    long requested = intent == null ? -1 : intent.getLongExtra("session", -1);
+    BubbleService requestedOwner = BubbleService.instance;
+    if (requestedOwner == null || !requestedOwner.isStarting(requested)) {
+      if (instance == null) stopSelf(id);
+      CaptureActivity.dismiss(requested);
+      return START_NOT_STICKY;
+    }
+    if (instance != null) {
+      if (session != requested) requestedOwner.fail("Finishing the previous recording. Tap again.");
+      CaptureActivity.dismiss(requested);
+      return START_NOT_STICKY;
+    }
+    session = requested;
+    owner = requestedOwner;
     instance = this;
     try {
       NotificationManager nm = getSystemService(NotificationManager.class);
@@ -61,7 +76,7 @@ public class DictationService extends Service implements RecognitionListener {
     } catch (Exception e) {
       fail("Could not start recording. Check microphone access and the selected recognition mode.");
     } finally {
-      CaptureActivity.dismiss();
+      CaptureActivity.dismiss(session);
     }
     return START_NOT_STICKY;
   }
@@ -135,8 +150,7 @@ public class DictationService extends Service implements RecognitionListener {
                     float level = Math.max(0, Math.min(1, (db + 40) / 30));
                     handler.post(
                         () -> {
-                          if (!cancelled && BubbleService.instance != null)
-                            BubbleService.instance.level(level);
+                          if (!cancelled && current()) owner.level(level);
                         });
                   }
                 }
@@ -204,22 +218,25 @@ public class DictationService extends Service implements RecognitionListener {
   }
 
   private void complete(String text) {
-    if (cancelled || finishing) return;
+    if (cancelled || finishing || !current()) return;
     finishing = true;
-    if (BubbleService.instance != null) BubbleService.instance.deliver(text);
-    else MainActivity.pendingTranscript = text;
+    owner.deliver(text);
     stopSelf();
   }
 
   private void fail(String message) {
-    if (cancelled || finishing) return;
+    if (cancelled || finishing || !current()) return;
     finishing = true;
-    if (BubbleService.instance != null) BubbleService.instance.fail(message);
+    owner.fail(message);
     stopSelf();
   }
 
   private void state(String s) {
-    if (BubbleService.instance != null && !cancelled) BubbleService.instance.state(s);
+    if (current() && !cancelled) owner.state(s);
+  }
+
+  private boolean current() {
+    return owner != null && BubbleService.instance == owner && owner.isCurrentSession(session);
   }
 
   private void cancel() {
@@ -264,8 +281,7 @@ public class DictationService extends Service implements RecognitionListener {
 
   @Override
   public void onRmsChanged(float f) {
-    if (BubbleService.instance != null)
-      BubbleService.instance.level(Math.max(0, Math.min(1, (f + 2) / 12)));
+    if (current() && !cancelled) owner.level(Math.max(0, Math.min(1, (f + 2) / 12)));
   }
 
   @Override

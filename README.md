@@ -20,7 +20,12 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
 - Private server mode over **Tailscale HTTPS**, with an additional bearer token.
 - Six checksum-verified server model downloads, including **Parakeet Unified
   English** and **Cohere Transcribe**, using the same transcribe.cpp model family
-  and GGUF weights as desktop Hex. One model stays resident at a time.
+  and GGUF weights as desktop Hex. One model and its inference session stay resident
+  at a time. The server preloads the last prepared model at startup.
+- Focus-triggered preflight opens the server connection and warms the selected model
+  before audio arrives. After idle, a synthetic silent warmup wakes the GPU.
+- A tiny non-focusable recording shim preserves editor/keyboard focus; cancelled or
+  interrupted startup requests cannot start a later microphone session.
 
 This is a first functional port of the interaction and visual language, not the
 full desktop application. The server transcribes after recording stops. Live
@@ -71,7 +76,8 @@ host for this workspace is documented in `docs/validation.md`.
 Open **Transcription models** in the app to download and select a model. All files
 are pinned to upstream revisions and checked against SHA-256 before use. Disk
 usage is shown before download. Models are loaded on demand; the first transcription
-can take longer while GPU shaders and weights are prepared. Parakeet and Cohere
+can still take longer if a request arrives before preparation finishes, or if the
+host is waking up. Parakeet and Cohere
 were installed on Godseye during development. Other catalog entries require testing.
 
 `scripts/install-server-task.ps1` registers a task to run inference at user logon.
@@ -113,3 +119,6 @@ models passed prerecorded-speech transcription over the phone’s HTTPS connecti
 
 See [validation](docs/validation.md) for actual results and remaining device checks.
 See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and port differences.
+
+See [latency and keyboard handoff validation](docs/latency-and-handoff.md) for the
+0.1.3 changes and measurements.

@@ -7,6 +7,46 @@ import java.nio.charset.StandardCharsets;
 import org.json.JSONObject;
 
 final class RemoteTranscriber {
+  private static boolean preparing;
+  private static long lastPrepare;
+  private static String preparedKey = "";
+
+  static synchronized void prepareInBackground(Context context) {
+    if (Prefs.local(context) || Prefs.endpoint(context).isBlank()) return;
+    Context app = context.getApplicationContext();
+    String model = Prefs.get(app).getString("model", "parakeet_unified_en");
+    String key = Prefs.endpoint(app) + "/" + model;
+    long now = android.os.SystemClock.elapsedRealtime();
+    if (preparing || (key.equals(preparedKey) && now - lastPrepare < 15000)) return;
+    preparing = true;
+    preparedKey = key;
+    lastPrepare = now;
+    new Thread(
+            () -> {
+              boolean success = false;
+              try {
+                HttpURLConnection conn = connect(app, "/prepare");
+                try {
+                  conn.setRequestMethod("POST");
+                  conn.setRequestProperty("X-Hex-Model", model);
+                  read(conn);
+                  success = true;
+                } finally {
+                  conn.disconnect();
+                }
+              } catch (Exception ignored) {
+                // A preflight must never delay recording or present an error over another app.
+              } finally {
+                synchronized (RemoteTranscriber.class) {
+                  preparing = false;
+                  if (!success) lastPrepare = 0;
+                }
+              }
+            },
+            "hex-prepare")
+        .start();
+  }
+
   private static HttpURLConnection connect(Context c, String path) throws Exception {
     if (Prefs.endpoint(c).isBlank())
       throw new IOException("Configure your Godseye URL in Hex first.");

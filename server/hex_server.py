@@ -10,6 +10,7 @@ from pathlib import Path
 import secrets
 import struct
 import threading
+import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -69,11 +70,27 @@ def make_server(host, port, token, transcribe, model_name, store=None):
                 return self.reply(200, {'models': store.catalog()})
             if self.path != '/health':
                 return self.reply(404, {'error': 'Not found'})
-            self.reply(200, {'model': model_name, 'ready': True})
+            self.reply(200, {'model': store.loaded if store else model_name,
+                             'ready': store.loaded is not None if store else True})
 
         def do_POST(self):
             if not self.authorized():
                 return
+            if self.path == '/prepare' and store is not None:
+                if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+                    self.close_connection = True
+                    return self.reply(400, {'error': 'Prepare takes no audio or body'})
+                started = time.perf_counter()
+                try:
+                    model_id = self.headers.get('X-Hex-Model', model_name)
+                    loaded = store.prepare(model_id)
+                    return self.reply(200, {'ready': True, 'model': model_id, 'loaded': loaded,
+                                           'prepare_ms': round((time.perf_counter()-started)*1000)})
+                except ValueError as error:
+                    return self.reply(400, {'error': str(error)})
+                except Exception:
+                    logging.exception('Model preparation failed')
+                    return self.reply(503, {'error': 'Model preparation failed'})
             if self.path.startswith('/models/') and self.path.endswith('/download') and store is not None:
                 model_id = self.path.split('/')[2]
                 try: store.definition(model_id)
@@ -98,13 +115,14 @@ def make_server(host, port, token, transcribe, model_name, store=None):
             if not gate.acquire(blocking=False):
                 return self.reply(429, {'error': 'Already transcribing; try again'})
             try:
+                started = time.perf_counter()
                 data = self.rfile.read(length)
                 if len(data) != length:
                     return self.reply(400, {'error': 'Incomplete request'})
                 rms = validate_wav(data)
                 model_id = self.headers.get('X-Hex-Model', model_name)
                 text = '' if rms < 0.001 else (store(data, model_id) if store else transcribe(data))
-                self.reply(200, {'text': text})
+                self.reply(200, {'text': text, 'server_ms': round((time.perf_counter()-started)*1000)})
             except ValueError as error:
                 self.reply(400, {'error': str(error)})
             except (TimeoutError, ConnectionError):
@@ -137,6 +155,12 @@ def main():
     from model_store import ModelStore
     store = ModelStore(args.models_dir, args.backend)
     server = make_server(args.host, args.port, token, None, args.model, store)
+    def prewarm():
+        try:
+            store.prepare(store.preferred(args.model))
+        except Exception:
+            logging.exception('Startup model preparation failed; retry from the app')
+    threading.Thread(target=prewarm, daemon=True).start()
     print(f'Hex server ready on {args.host}:{args.port}, model {args.model}, {args.backend}', flush=True)
     try:
         server.serve_forever()
