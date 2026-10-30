@@ -63,8 +63,20 @@ Validation:
 
 - The initial S21 run passed 8 of 14 checks, including the keyboard visibility and
   focus regression. Five failures occurred before the fixture field was available;
-  one could not capture that field. The phone is being coordinated for a clean
-  rerun; these failures are not being counted as passing checks.
+  one could not capture that field. These failures were not counted as passing checks.
+- With the S21 unlocked and idle, the complete suite subsequently passed:
+  **OK (14 tests)** in **39.327 seconds**. This run reached Godseye from the phone
+  at school over Tailscale, after reconnecting to Android's changed wireless ADB
+  port. No local-network shortcut or USB connection was used.
+- Phone-side elapsed time for the Parakeet JFK request was **439 ms**. The Cohere
+  request took **12,765 ms**, including switching/loading the other model: this
+  test changes the preference directly and does not preflight at model selection.
+  These are distinct scenarios, not comparable warmed-model latency measurements.
+- The full run covered keyboard visibility/window focus throughout startup,
+  stale startup rejection, cancellation, microphone foreground operation, safe
+  selection/insertion, password/home hiding, appearance persistence, token masking,
+  and real transcription by both installed models. The original selected model
+  was restored, and Hex accessibility was rebound after instrumentation ended.
 
 APK: `artifacts/hex-mobile-0.1.3-debug.apk`
 SHA-256: `c4136e51d288d5b1d350d39cd9dccc0f559da6cac14b7d112a177d8e3c8705fe`
