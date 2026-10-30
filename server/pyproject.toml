@@ -1,0 +1,5 @@
+[project]
+name = "hex-mobile-server"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+dependencies = ["transcribe-cpp @ https://github.com/handy-computer/transcribe.cpp/releases/download/v0.4.1/transcribe_cpp-0.4.1-py3-none-any.whl"]

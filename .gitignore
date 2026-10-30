@@ -1,0 +1,17 @@
+.gradle/
+**/build/
+local.properties
+.idea/
+*.iml
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.log
+artifacts/*
+!artifacts/.gitkeep
+.env
+.server-token
+server/models/
+server/native/
+*.part
