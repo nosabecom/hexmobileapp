@@ -31,6 +31,10 @@ in 658 ms and transcribed in 122 ms (110 ms server). Both recognized the expecte
 speech. This illustrates why model preparation starts at selection/focus rather
 than waiting for the upload.
 
+After several minutes idle with Parakeet resident, `/prepare` reported no reload
+and completed its warmup in 175 ms. The following HTTPS transcription completed
+in 325 ms (316 ms server), with the expected speech recognized.
+
 A sleeping/offline Godseye, network reconnection, or a model selected immediately
 before a short recording can still add waiting time.
 
