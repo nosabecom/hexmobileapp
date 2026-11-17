@@ -8,13 +8,26 @@ import math
 import os
 from pathlib import Path
 import secrets
+import socket
 import struct
 import threading
 import time
 import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from customizations import CustomizationStore, MAX_SETTINGS_BYTES
 
 MAX_BYTES = 16000 * 2 * 120 + 44
+
+
+class HexHTTPServer(ThreadingHTTPServer):
+    # Windows SO_REUSEADDR permits multiple listeners on the same address. A
+    # stale process must fail visibly rather than serving alternating snapshots.
+    allow_reuse_address = os.name != 'nt'
+
+    def server_bind(self):
+        if os.name == 'nt':
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def validate_wav(data):
@@ -34,7 +47,7 @@ def validate_wav(data):
         raise ValueError("Invalid WAV") from error
 
 
-def make_server(host, port, token, transcribe, model_name, store=None):
+def make_server(host, port, token, transcribe, model_name, store=None, customizations=None):
     gate = threading.Lock()
 
     class Handler(BaseHTTPRequestHandler):
@@ -66,12 +79,44 @@ def make_server(host, port, token, transcribe, model_name, store=None):
         def do_GET(self):
             if not self.authorized():
                 return
+            if self.path == '/customizations' and customizations is not None:
+                try:
+                    return self.reply(200, customizations.snapshot())
+                except (OSError, ValueError):
+                    return self.reply(503, {'error': 'Customizations unavailable'})
             if self.path == '/models' and store is not None:
                 return self.reply(200, {'models': store.catalog()})
             if self.path != '/health':
                 return self.reply(404, {'error': 'Not found'})
             self.reply(200, {'model': store.loaded if store else model_name,
                              'ready': store.loaded is not None if store else True})
+
+        def do_PUT(self):
+            if not self.authorized():
+                return
+            if self.path != '/customizations' or customizations is None:
+                return self.reply(404, {'error': 'Not found'})
+            # A connection with an unread body cannot be reused safely.
+            self.close_connection = True
+            try:
+                if self.headers.get('Transfer-Encoding'):
+                    return self.reply(400, {'error': 'Use Content-Length'})
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 2 <= length <= MAX_SETTINGS_BYTES:
+                    return self.reply(413, {'error': 'Settings too large or empty'})
+                if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
+                    return self.reply(415, {'error': 'Expected application/json'})
+                body = self.rfile.read(length)
+                if len(body) != length:
+                    return self.reply(400, {'error': 'Incomplete request'})
+                snapshot = customizations.update(json.loads(body))
+                self.reply(200, {'revision': snapshot['revision']})
+            except (ValueError, UnicodeError):
+                self.reply(400, {'error': 'Invalid desktop settings'})
+            except (TimeoutError, ConnectionError):
+                self.reply(408, {'error': 'Upload timed out'})
+            except OSError:
+                self.reply(503, {'error': 'Could not save customizations'})
 
         def do_POST(self):
             if not self.authorized():
@@ -122,7 +167,13 @@ def make_server(host, port, token, transcribe, model_name, store=None):
                 rms = validate_wav(data)
                 model_id = self.headers.get('X-Hex-Model', model_name)
                 text = '' if rms < 0.001 else (store(data, model_id) if store else transcribe(data))
-                self.reply(200, {'text': text, 'server_ms': round((time.perf_counter()-started)*1000)})
+                payload = {'text': text, 'server_ms': round((time.perf_counter()-started)*1000)}
+                if customizations is not None:
+                    try:
+                        payload['customizations'] = customizations.snapshot()
+                    except (OSError, ValueError):
+                        pass  # Keep dictation available if the settings file needs attention.
+                self.reply(200, payload)
             except ValueError as error:
                 self.reply(400, {'error': str(error)})
             except (TimeoutError, ConnectionError):
@@ -133,7 +184,7 @@ def make_server(host, port, token, transcribe, model_name, store=None):
             finally:
                 gate.release()
 
-    return ThreadingHTTPServer((host, port), Handler)
+    return HexHTTPServer((host, port), Handler)
 
 
 def main():
@@ -144,6 +195,7 @@ def main():
     parser.add_argument('--models-dir', type=Path, default=Path('models'))
     parser.add_argument('--backend', default='auto', choices=['auto','cpu','vulkan','cuda'])
     parser.add_argument('--token-file', type=Path, default=Path('.server-token'))
+    parser.add_argument('--customizations-file', type=Path, default=Path('.desktop-customizations.json'))
     args = parser.parse_args()
     if not args.token_file.exists():
         fd = os.open(args.token_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -154,7 +206,8 @@ def main():
         raise SystemExit('Server token must be at least 24 characters')
     from model_store import ModelStore
     store = ModelStore(args.models_dir, args.backend)
-    server = make_server(args.host, args.port, token, None, args.model, store)
+    server = make_server(args.host, args.port, token, None, args.model, store,
+                         CustomizationStore(args.customizations_file))
     def prewarm():
         try:
             store.prepare(store.preferred(args.model))

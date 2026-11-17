@@ -19,6 +19,7 @@ public class DictationService extends Service implements RecognitionListener {
   private boolean finishing;
   private long session;
   private BubbleService owner;
+  private String engine;
   private final Runnable timeout = () -> stopRecording();
 
   static void stopCapture() {
@@ -48,6 +49,7 @@ public class DictationService extends Service implements RecognitionListener {
     }
     session = requested;
     owner = requestedOwner;
+    engine = Prefs.local(this) ? "On-device" : Prefs.get(this).getString("model", "parakeet_unified_en");
     instance = this;
     try {
       NotificationManager nm = getSystemService(NotificationManager.class);
@@ -122,6 +124,7 @@ public class DictationService extends Service implements RecognitionListener {
     handler.postDelayed(timeout, 120000);
     new Thread(
             () -> {
+              boolean audioReady = false;
               try {
                 ByteArrayOutputStream pcm = new ByteArrayOutputStream();
                 byte[] buf = new byte[3200];
@@ -172,12 +175,19 @@ public class DictationService extends Service implements RecognitionListener {
                   handler.post(() -> fail("Recording too short. Please try again."));
                   return;
                 }
-                String text = RemoteTranscriber.transcribe(this, wav(data));
+                byte[] audio = wav(data);
+                audioReady = true;
+                handler.post(() -> {
+                  if (!cancelled && current()) owner.retainRecording(audio, engine);
+                });
+                String text = RemoteTranscriber.transcribe(this, audio, engine);
                 handler.post(() -> complete(text));
               } catch (Exception e) {
+                String message = audioReady
+                    ? "Transcription failed. Check your server connection, then tap the retry arrow."
+                    : "Recording failed. Tap Hex to record again.";
                 handler.post(
-                    () ->
-                        fail("Transcription failed. Check your server connection and try again."));
+                    () -> fail(message));
               }
             },
             "hex-audio")
@@ -216,8 +226,62 @@ public class DictationService extends Service implements RecognitionListener {
   private void complete(String text) {
     if (cancelled || finishing || !current()) return;
     finishing = true;
-    owner.deliver(text);
+    handler.removeCallbacksAndMessages(null);
+    stopForeground(STOP_FOREGROUND_REMOVE);
+    if (text == null || text.isBlank()) {
+      owner.deliver(text);
+      stopSelf();
+      return;
+    }
+    state("…");
+    new Thread(() -> {
+      Customizations.Result processed = Customizations.process(this, text);
+      handler.post(() -> finishTranscript(text, processed));
+    }, "hex-transform").start();
+  }
+
+  private void finishTranscript(String original, Customizations.Result processed) {
+    if (cancelled || !current()) return;
+    deliverProcessed(this, owner, original, processed, engine);
     stopSelf();
+  }
+
+  // Reuse the recording without starting a microphone service or disturbing the editor.
+  static void retryRecording(BubbleService owner, long session, byte[] audio, String engine) {
+    Context app = owner.getApplicationContext();
+    Handler main = new Handler(Looper.getMainLooper());
+    new Thread(() -> {
+      try {
+        String original = RemoteTranscriber.transcribe(app, audio, engine);
+        if (BubbleService.instance != owner || !owner.isCurrentSession(session)) return;
+        Customizations.Result processed = original == null || original.isBlank()
+            ? null : Customizations.process(app, original);
+        main.post(() -> {
+          if (BubbleService.instance != owner || !owner.isCurrentSession(session)) return;
+          if (processed == null) owner.deliver(original);
+          else deliverProcessed(app, owner, original, processed, engine);
+        });
+      } catch (Exception error) {
+        main.post(() -> {
+          if (BubbleService.instance == owner && owner.isCurrentSession(session))
+            owner.fail("Transcription failed. Check your server connection, then tap the retry arrow.");
+        });
+      }
+    }, "hex-retry").start();
+  }
+
+  private static void deliverProcessed(Context context, BubbleService owner, String original,
+      Customizations.Result processed, String engine) {
+    try (TranscriptHistory history = new TranscriptHistory(context)) {
+      history.add(processed.text(), original, processed.mode(), engine);
+    } catch (android.database.SQLException e) {
+      android.widget.Toast.makeText(context, "Could not save history. Check available phone storage.", android.widget.Toast.LENGTH_LONG).show();
+    }
+    if (processed.failed()) android.widget.Toast.makeText(context,
+        "Custom transformations could not run. Kept your words; check NewEra sync and Android System WebView.",
+        android.widget.Toast.LENGTH_LONG).show();
+    if (processed.text().isBlank()) owner.fail("Your customizations removed all text. Check the original in transcript history.");
+    else owner.deliver(processed.text());
   }
 
   private void fail(String message) {

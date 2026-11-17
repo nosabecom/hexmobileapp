@@ -93,6 +93,8 @@ public class MainActivity extends Activity {
                 .show());
     button("Transcription models", () -> startActivity(new Intent(this, ModelsActivity.class)));
     button("Bubble appearance", () -> startActivity(new Intent(this, AppearanceActivity.class)));
+    button("Transcript history", () -> startActivity(new Intent(this, HistoryActivity.class)));
+    button("NewEra customizations", () -> startActivity(new Intent(this, CustomizationsActivity.class)));
     label("TRANSCRIPTION", 12, 0xffb3adb9);
     local = new Switch(this);
     local.setText("On this phone · offline");
@@ -140,6 +142,7 @@ public class MainActivity extends Activity {
                 .putString("token", token.getText().toString().trim())
                 .apply();
             toast("Server saved");
+            Customizations.syncInBackground(this);
           } catch (Exception e) {
             toast("Enter an HTTPS URL, or a loopback URL for emulator testing.");
           }
@@ -194,6 +197,7 @@ public class MainActivity extends Activity {
   @Override
   public void onResume() {
     super.onResume();
+    Customizations.syncInBackground(this);
     if (local != null) local.setChecked(Prefs.local(this));
     if (status != null)
       status.setText(

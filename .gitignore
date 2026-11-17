@@ -12,6 +12,12 @@ artifacts/*
 !artifacts/.gitkeep
 .env
 .server-token
+.desktop-customizations.json
+.desktop-customizations.tmp
+.newera-sync-token
+newera-sync-status.json
+newera-transformations.js
 server/models/
 server/native/
 *.part
+node_modules/

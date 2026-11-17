@@ -41,6 +41,21 @@ public class FieldsActivity extends Activity {
     EditText first =
         new EditText(this) {
           @Override
+          public void onInitializeAccessibilityNodeInfo(
+              android.view.accessibility.AccessibilityNodeInfo info) {
+            super.onInitializeAccessibilityNodeInfo(info);
+            if ("hiddenCursor".equals(mode) || "hiddenCursorNoInput".equals(mode))
+              info.setTextSelection(-1, -1);
+          }
+
+          @Override
+          public android.view.inputmethod.InputConnection onCreateInputConnection(
+              android.view.inputmethod.EditorInfo info) {
+            if ("hiddenCursorNoInput".equals(mode)) return null;
+            return super.onCreateInputConnection(info);
+          }
+
+          @Override
           public boolean performAccessibilityAction(int action, Bundle arguments) {
             if (action == android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT) {
               if ("ignore".equals(mode)) return true;

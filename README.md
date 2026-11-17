@@ -16,13 +16,32 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
   for 0.6 seconds to paste the last transcript into the currently focused field.
   Recording notification includes Cancel.
   Maximum recording: two minutes. Locking the screen cancels recording.
+- After a server dictation finishes or fails, a small circular retry arrow appears
+  to the left of the bubble. Tap it to transcribe the same audio again without
+  recording. It replaces the previous words only if the original field and cursor
+  are untouched; otherwise the new result is saved for hold-to-paste recovery.
+  The most recent recording stays only in memory until the next recording,
+  cancellation, screen lock, or service exit. On-device recognition does not expose
+  replayable audio, so the retry arrow is available in server mode only.
 - Replaces the current selection without dropping surrounding text. If focus,
   text or selection changes, retains the transcript in memory for explicit recovery.
+  On Android 13 and newer, fields that hide their accessibility cursor can use
+  Android's text-input connection instead, without changing your keyboard or clipboard.
+  If neither interface provides a safe insertion point, recording still works and
+  the transcript remains available for recovery.
   A small gold dot marks an unconfirmed insertion. If a field rejects recovery, Hex
   copies the transcript and tries the editor’s Paste action. The last transcript is
   kept only in memory until replaced, discarded/copied in Hex, or the process exits.
 - Optional Android **on-device** recognizer; no silent cloud fallback.
 - Private server mode over **Tailscale HTTPS**, with an additional bearer token.
+- **Transcript history** saves completed dictations on the phone, including words
+  that could not be inserted. Search, read the full text, copy, share, inspect the
+  original before customizations, and delete individual entries or clear history.
+- **NewEra customizations** syncs desktop modes, corrections, ordered built-in
+  transformations, and the actual custom TypeScript/JavaScript transformations.
+  Shared vocabulary pronunciation aliases also sync as phrase corrections.
+  Cached rules and scripts run on the phone in both recognition modes, including
+  offline. NewEra remains the source of truth.
 - Six checksum-verified server model downloads, including **Parakeet Unified
   English** and **Cohere Transcribe**, using the same transcribe.cpp model family
   and GGUF weights as desktop Hex. One model and its inference session stay resident
@@ -35,7 +54,7 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
 
 This is a first functional port of the interaction and visual language, not the
 full desktop application. The server transcribes after recording stops. Live
-streaming, rewriting, custom vocabulary, persistent history, and phone-local GGUF
+streaming, provider-backed rewriting, recognition hints, and phone-local GGUF
 inference are not implemented. English is selected for server inference in this
 build. Model weights remain on the chosen server, not the phone.
 
@@ -86,7 +105,9 @@ can still take longer if a request arrives before preparation finishes, or if th
 host is waking up. Parakeet and Cohere
 were installed on Godseye during development. Other catalog entries require testing.
 
-`scripts/install-server-task.ps1` registers a task to run inference at user logon.
+Run `scripts/install-server-task.ps1` from an elevated PowerShell to register
+inference at startup (after a 30-second delay) and user logon. The task runs with
+limited user privileges without a desktop sign-in or stored password.
 To remove it: stop and unregister `Hex Mobile Inference` in Task Scheduler, then
 run `tailscale serve --https=8444 off` to remove only this service's route.
 
@@ -98,9 +119,15 @@ run `tailscale serve --https=8444 off` to remove only this service's route.
 3. Choose offline phone recognition, or save the server URL and token and pick a model.
 4. Open **Bubble appearance** to customize the blip and recording bar.
 5. Open a normal text field in another app and tap the bubble. Tap again to finish.
-6. If the text did not arrive, focus the intended field and hold the idle bubble.
+6. Open **Transcript history** to find previous dictations after restarting Hex.
+   New dictations are saved automatically; older in-memory-only dictations cannot
+   be recovered retroactively. Uninstalling Hex or clearing app data removes history.
+7. If the text did not arrive, focus the intended field and hold the idle bubble.
    If Hex says it copied the text, use that field’s normal **Paste** command.
    **Recover last transcript** in Hex also offers Copy and Discard.
+
+See [NewEra customization sync](docs/newera-sync-and-history.md) for desktop setup,
+offline behavior, history, and validation.
 
 Accessibility sees the focused field and cursor so it can insert text. Field
 contents are never sent to the server. Password fields are excluded. Some custom

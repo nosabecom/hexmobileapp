@@ -61,7 +61,8 @@ listener, router port forward, or tailnet-wide policy change was created.
 
 Windows scheduled task **Hex Mobile Inference** runs under the existing user at
 logon. It was started and its HTTPS health check passed after deployment.
-Godseye must remain awake, logged in, and online for this mode.
+Godseye must remain awake and online for this mode. The startup task was updated
+on 2026-11-10 to run without a desktop sign-in; see the recovery check below.
 
 Both installed models were verified against Hex's pinned SHA-256 checksums.
 The four other selectable catalog entries have **not** been downloaded or
@@ -150,3 +151,26 @@ SHA-256: `690714efc8994f7d3d2835612136756c61475f4abb8aaddda39186209acec827`
 
 This is a development APK signed with Godseye's Android debug key, not a release
 or Play Store package. Keep using the same signing key for in-place updates.
+
+## Recovery after Windows Update — 2026-11-10
+
+The phone reported transcription failure. The private HTTPS endpoint returned
+502 because nothing was listening on Godseye's loopback port 8765. Windows System
+events showed update-triggered restarts at approximately 17:29–17:33. There was no
+interactive user session, and the old task required an interactive logon token,
+so even manually requesting that task could not start inference.
+
+Saved the previous task XML and updated the existing **Hex Mobile Inference** task
+to use S4U with limited privileges, a startup trigger delayed 30 seconds, the
+existing logon trigger, and StartWhenAvailable. It needs no stored password.
+IgnoreNew prevents overlapping scheduled instances; the server's exclusive
+listening socket remains in place. The repository installer now uses the same
+configuration and requires elevated PowerShell for startup registration.
+
+Started the task while no desktop user was signed in. Authenticated HTTPS health
+reported Parakeet ready, and the real JFK WAV fixture transcribed correctly over
+the private HTTPS endpoint in 320 ms. Unauthenticated HTTPS still returned 401.
+All 19 Python server tests passed. No phone APK update was needed. The phone was
+unavailable to the device tools, so live phone dictation was not rechecked. An
+actual subsequent reboot was not performed; startup registration and execution
+without an interactive session were verified separately.

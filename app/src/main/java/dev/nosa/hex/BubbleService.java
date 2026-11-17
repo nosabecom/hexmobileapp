@@ -14,11 +14,19 @@ public class BubbleService extends AccessibilityService {
   static volatile BubbleService instance;
   private final Handler handler = new Handler(Looper.getMainLooper());
   private WindowManager wm;
+  private LinearLayout overlay;
   private DotScopeView bubble;
+  private RetryView retry;
   private WindowManager.LayoutParams params;
   private AccessibilityNodeInfo target;
   private String original;
   private int start, end;
+  private int replaceStart, replaceEnd;
+  private byte[] retryAudio;
+  private String retryEngine;
+  private AccessibilityNodeInfo retryTarget;
+  private RetryEdit retryEdit;
+  private EditorInput.Snapshot inputSnapshot;
   private boolean busy;
   private long generation;
   private boolean starting;
@@ -42,10 +50,26 @@ public class BubbleService extends AccessibilityService {
   @Override
   protected void onServiceConnected() {
     instance = this;
+    if (Build.VERSION.SDK_INT >= 33) {
+      var info = getServiceInfo();
+      info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_INPUT_METHOD_EDITOR;
+      setServiceInfo(info);
+    }
     registerReceiver(screenOff, new IntentFilter(Intent.ACTION_SCREEN_OFF));
     wm = getSystemService(WindowManager.class);
     Prefs.get(this).registerOnSharedPreferenceChangeListener(appearanceListener);
     updateFocus();
+  }
+
+  @Override
+  @android.annotation.TargetApi(33)
+  public android.accessibilityservice.InputMethod onCreateInputMethod() {
+    return new EditorInput(this);
+  }
+
+  private EditorInput.Snapshot captureInput(AccessibilityNodeInfo node) {
+    if (Build.VERSION.SDK_INT < 33 || !(getInputMethod() instanceof EditorInput input)) return null;
+    return input.capture(node);
   }
 
   @Override
@@ -105,12 +129,21 @@ public class BubbleService extends AccessibilityService {
     if (bubble != null) return;
     RemoteTranscriber.prepareInBackground(this);
     bubble = new DotScopeView(this);
+    retry = new RetryView(this);
+    retry.setVisibility(retryAudio == null ? View.GONE : View.VISIBLE);
+    retry.setOnClickListener(v -> retryRecording());
+    overlay = new LinearLayout(this);
+    overlay.setOrientation(LinearLayout.HORIZONTAL);
+    overlay.setGravity(Gravity.CENTER_VERTICAL);
+    overlay.addView(retry, new LinearLayout.LayoutParams(bubbleDimension(48), bubbleDimension(56)));
+    overlay.addView(bubble, new LinearLayout.LayoutParams(bubbleDimension(56), bubbleDimension(56)));
     bubbleState = "idle";
     bubble.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
+    retry.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
     refreshRecovery();
     params =
         new WindowManager.LayoutParams(
-            bubbleDimension(56),
+            bubbleDimension(56) + (retryAudio == null ? 0 : bubbleDimension(48)),
             bubbleDimension(56),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
@@ -118,7 +151,8 @@ public class BubbleService extends AccessibilityService {
             PixelFormat.TRANSLUCENT);
     params.gravity = Gravity.TOP | Gravity.LEFT;
     var bounds = wm.getCurrentWindowMetrics().getBounds();
-    params.x = Prefs.get(this).getInt("bubbleX", bounds.width() - params.width - dp(12));
+    params.x = Prefs.get(this).getInt("bubbleX", bounds.width() - bubbleDimension(56) - dp(12))
+        - (retryAudio == null ? 0 : bubbleDimension(48));
     params.y = Prefs.get(this).getInt("bubbleY", bounds.height() / 3);
     clamp();
     bubble.setOnClickListener(
@@ -188,7 +222,7 @@ public class BubbleService extends AccessibilityService {
                   params.x = initialX + (int) (event.getRawX() - x);
                   params.y = initialY + (int) (event.getRawY() - y);
                   clamp();
-                  wm.updateViewLayout(bubble, params);
+                  wm.updateViewLayout(overlay, params);
                 }
                 return true;
               case MotionEvent.ACTION_UP:
@@ -196,7 +230,7 @@ public class BubbleService extends AccessibilityService {
                 if (moved && !held)
                   Prefs.get(BubbleService.this)
                       .edit()
-                      .putInt("bubbleX", params.x)
+                      .putInt("bubbleX", params.x + (retry.getVisibility() == View.VISIBLE ? bubbleDimension(48) : 0))
                       .putInt("bubbleY", params.y)
                       .apply();
                 else if (!held && !moved) v.performClick();
@@ -208,7 +242,7 @@ public class BubbleService extends AccessibilityService {
             return false;
           }
         });
-    wm.addView(bubble, params);
+    wm.addView(overlay, params);
   }
 
   private void clearHold() {
@@ -254,35 +288,78 @@ public class BubbleService extends AccessibilityService {
     int width =
         bubbleDimension(
             bubbleState.equals("recording") ? 156 : bubbleState.equals("processing") ? 112 : 56);
-    params.x += params.width - width;
-    params.width = width;
+    boolean canRetry = !busy && retryAudio != null;
+    int totalWidth = width + (canRetry ? bubbleDimension(48) : 0);
+    params.x += params.width - totalWidth;
+    params.width = totalWidth;
     params.height = bubbleDimension(56);
+    bubble.setLayoutParams(new LinearLayout.LayoutParams(width, params.height));
+    retry.setLayoutParams(new LinearLayout.LayoutParams(bubbleDimension(48), params.height));
+    retry.setVisibility(canRetry ? View.VISIBLE : View.GONE);
     bubble.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
+    retry.appearance(Prefs.bubbleSize(this) / 100f, 1 - Prefs.bubbleTransparency(this) / 100f);
     clamp();
-    wm.updateViewLayout(bubble, params);
+    wm.updateViewLayout(overlay, params);
   }
 
   boolean captureTarget() {
+    return captureTarget(true);
+  }
+
+  private boolean captureTarget(boolean newRecording) {
     AccessibilityNodeInfo node = focused();
     if (!eligible(node)) {
       if (node != null) node.recycle();
       return false;
     }
+    if (newRecording) clearRecording();
     clearTarget();
     target = node;
     original = fieldText(node);
     start = selection(node, true);
     end = selection(node, false);
-    if (start < 0 || end < 0) {
-      clearTarget();
-      message("This field does not expose its cursor position.");
-      return false;
-    }
+    replaceStart = start;
+    replaceEnd = end;
+    if (!validSelection(original, start, end)) inputSnapshot = captureInput(node);
     busy = true;
     starting = true;
     generation = SystemClock.elapsedRealtimeNanos();
     state("starting");
     return true;
+  }
+
+  void retainRecording(byte[] audio, String engine) {
+    retryAudio = audio;
+    retryEngine = engine;
+    if (retryTarget != null) retryTarget.recycle();
+    retryTarget = target == null ? null : AccessibilityNodeInfo.obtain(target);
+    retryEdit = RetryEdit.captured(original, start, end);
+  }
+
+  void retryRecording() {
+    if (busy || retryAudio == null || getSystemService(KeyguardManager.class).isKeyguardLocked()) return;
+    if (!captureTarget(false)) return;
+    // Retry may finish after an edit or a focus change. Only replace the original words
+    // if the same field still contains the exact text and cursor we last confirmed.
+    if (retryTarget != null && retryTarget.equals(target) && retryEdit != null
+        && retryEdit.matches(original, start, end)) {
+      replaceStart = retryEdit.from();
+      replaceEnd = retryEdit.to();
+    } else {
+      clearTarget();
+      retryEdit = null;
+    }
+    starting = false;
+    state("…");
+    DictationService.retryRecording(this, generation, retryAudio, retryEngine);
+  }
+
+  private void clearRecording() {
+    retryAudio = null;
+    retryEngine = null;
+    retryEdit = null;
+    if (retryTarget != null) retryTarget.recycle();
+    retryTarget = null;
   }
 
   long sessionId() {
@@ -339,8 +416,12 @@ public class BubbleService extends AccessibilityService {
         && Objects.equals(original, fieldText(current))
         && selection(current, true) == start
         && selection(current, false) == end) {
-      inserted = insertAtCursor(current, transcript) == Insertion.CONFIRMED;
+      inserted = (validSelection(original, replaceStart, replaceEnd)
+          ? insertAtSelection(current, replaceStart, replaceEnd, transcript)
+          : insertWithInput(current, inputSnapshot, transcript)) == Insertion.CONFIRMED;
     }
+    if (retryAudio != null && transcript != null && !transcript.isBlank())
+      retryEdit = inserted && retryEdit != null ? retryEdit.inserted(transcript) : null;
     if (current != null) current.recycle();
     if (transcript == null || transcript.isBlank()) message("No speech detected. Try again.");
     else {
@@ -351,17 +432,33 @@ public class BubbleService extends AccessibilityService {
     reset();
   }
 
-  private enum Insertion {
+  enum Insertion {
     CONFIRMED,
     ACCEPTED,
     REJECTED
   }
 
+  private static boolean validSelection(String text, int from, int to) {
+    return from >= 0 && to >= 0 && from <= text.length() && to <= text.length();
+  }
+
+  private Insertion insertWithInput(
+      AccessibilityNodeInfo node, EditorInput.Snapshot snapshot, String transcript) {
+    if (Build.VERSION.SDK_INT < 33 || !(getInputMethod() instanceof EditorInput input))
+      return Insertion.REJECTED;
+    return input.insert(node, snapshot, transcript);
+  }
+
   private Insertion insertAtCursor(AccessibilityNodeInfo node, String transcript) {
     String before = fieldText(node);
     int from = selection(node, true), to = selection(node, false);
-    if (from < 0 || to < 0 || from > before.length() || to > before.length())
-      return Insertion.REJECTED;
+    if (!validSelection(before, from, to))
+      return insertWithInput(node, captureInput(node), transcript);
+    return insertAtSelection(node, from, to, transcript);
+  }
+
+  private Insertion insertAtSelection(AccessibilityNodeInfo node, int from, int to, String transcript) {
+    String before = fieldText(node);
     TextInsertion.Result edit = TextInsertion.insert(before, from, to, transcript);
     Bundle args = new Bundle();
     args.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, edit.text());
@@ -418,6 +515,7 @@ public class BubbleService extends AccessibilityService {
 
   void cancel() {
     DictationService.cancelCapture();
+    clearRecording();
     reset();
   }
 
@@ -433,6 +531,7 @@ public class BubbleService extends AccessibilityService {
     if (target != null) target.recycle();
     target = null;
     original = null;
+    inputSnapshot = null;
   }
 
   private void message(String text) {
@@ -442,8 +541,10 @@ public class BubbleService extends AccessibilityService {
   private void hide() {
     clearHold();
     if (bubble != null) {
-      wm.removeView(bubble);
+      wm.removeView(overlay);
       bubble = null;
+      retry = null;
+      overlay = null;
     }
   }
 
@@ -463,6 +564,7 @@ public class BubbleService extends AccessibilityService {
     unregisterReceiver(screenOff);
     handler.removeCallbacksAndMessages(null);
     DictationService.cancelCapture();
+    clearRecording();
     clearTarget();
     hide();
     instance = null;

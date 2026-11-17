@@ -4,6 +4,9 @@ This is an independent Android companion, not an official Anomaly release.
 The dot-scope Canvas implementation adapts Hex's `src/dot_scope.rs`,
 `src/dot_scope/scope.rs`, `src/rune_hud.wgsl`, and hairline hexagon mark.
 The GGUF catalog comes from `src/transcription_models.rs`.
+Text correction behavior and built-in transformations adapt Hex's
+`text_replacements.rs` and `personal_commands.rs`. The NewEra sync transports the
+user's own config rather than embedding it in the main APK.
 Source: https://github.com/anomalyco/hex/tree/b9d7eff8ab8d20d1cf77ba1fa1282d7763e13183 (inspected 2026-10-30).
 
 The mobile adaptation preserves the 43 × 9 dot field, 112/76/26 logical
@@ -40,6 +43,13 @@ The server installs transcribe.cpp v0.4.1 (https://github.com/handy-computer/tra
 Runtime and model weights retain their respective upstream licenses. Model downloads
 are optional, pinned to revisions, and SHA-256 verified. No model weights are bundled
 in the Android APK. Consult the linked Hugging Face model cards before redistribution.
+
+# Transformation runtime and bundler
+
+AndroidX JavaScriptEngine 1.1.1 (Apache-2.0) supplies the isolated JavaScript
+runtime: https://developer.android.com/jetpack/androidx/releases/javascriptengine .
+The NewEra exporter uses esbuild 0.28.2 (MIT) to bundle the user's config:
+https://github.com/evanw/esbuild . Neither Node nor esbuild is bundled in the APK.
 
 # Test audio
 

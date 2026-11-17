@@ -12,6 +12,7 @@ final class RemoteTranscriber {
   private static String preparedKey = "";
 
   static synchronized void prepareInBackground(Context context) {
+    Customizations.syncInBackground(context);
     if (Prefs.local(context) || Prefs.endpoint(context).isBlank()) return;
     Context app = context.getApplicationContext();
     String model = Prefs.get(app).getString("model", "parakeet_unified_en");
@@ -92,19 +93,39 @@ final class RemoteTranscriber {
     }
   }
 
+  static void syncCustomizations(Context c) throws Exception {
+    String server = Prefs.endpoint(c);
+    HttpURLConnection conn = connect(c, "/customizations");
+    try {
+      Customizations.accept(c, new JSONObject(read(conn)), server);
+    } finally {
+      conn.disconnect();
+    }
+  }
+
   static String transcribe(Context c, byte[] wav) throws Exception {
+    return transcribe(c, wav, Prefs.get(c).getString("model", "parakeet_unified_en"));
+  }
+
+  static String transcribe(Context c, byte[] wav, String model) throws Exception {
+    String server = Prefs.endpoint(c);
     HttpURLConnection conn = connect(c, "/transcribe");
     try {
       conn.setRequestMethod("POST");
-      conn.setRequestProperty(
-          "X-Hex-Model", Prefs.get(c).getString("model", "parakeet_unified_en"));
+      conn.setRequestProperty("X-Hex-Model", model);
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "audio/wav");
       conn.setFixedLengthStreamingMode(wav.length);
       try (OutputStream out = conn.getOutputStream()) {
         out.write(wav);
       }
-      return new JSONObject(read(conn)).getString("text");
+      JSONObject response = new JSONObject(read(conn));
+      JSONObject settings = response.optJSONObject("customizations");
+      if (settings != null && Customizations.enabled(c)) {
+        try { Customizations.accept(c, settings, server); }
+        catch (org.json.JSONException ignored) { /* Keep the last valid snapshot. */ }
+      }
+      return response.getString("text");
     } finally {
       conn.disconnect();
     }
@@ -119,7 +140,7 @@ final class RemoteTranscriber {
       byte[] buf = new byte[4096];
       int n;
       while ((n = in.read(buf)) != -1) {
-        if (out.size() + n > 65536) throw new IOException("Server response too large.");
+        if (out.size() + n > 1024 * 1024) throw new IOException("Server response too large.");
         out.write(buf, 0, n);
       }
       return new String(out.toByteArray(), StandardCharsets.UTF_8);

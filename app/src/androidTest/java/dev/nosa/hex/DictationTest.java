@@ -92,6 +92,10 @@ public class DictationTest {
 
   private AccessibilityNodeInfo find(String description) {
     AccessibilityNodeInfo root = ui.getRootInActiveWindow();
+    return find(root, description);
+  }
+
+  private AccessibilityNodeInfo find(AccessibilityNodeInfo root, String description) {
     if (root == null) return null;
     ArrayDeque<AccessibilityNodeInfo> q = new ArrayDeque<>();
     q.add(root);
@@ -109,6 +113,167 @@ public class DictationTest {
       n.recycle();
     }
     return result;
+  }
+
+  private AccessibilityNodeInfo retryButton() {
+    AccessibilityNodeInfo result = null;
+    for (var window : ui.getWindows()) {
+      if (window.getType() == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY)
+        result = find(window.getRoot(), "Retry last transcription");
+      window.recycle();
+    }
+    return result;
+  }
+
+  private void tapRetry() throws Exception {
+    waitFor(() -> retryButton() != null, 3000);
+    var button = retryButton();
+    assertNotNull(button);
+    assertTrue(button.performAction(AccessibilityNodeInfo.ACTION_CLICK));
+    button.recycle();
+  }
+
+  private byte[] retainRecording() {
+    byte[] audio = DictationService.wav(new byte[3200]);
+    instrumentation.runOnMainSync(() -> BubbleService.instance.retainRecording(audio, "parakeet_unified_en"));
+    return audio;
+  }
+
+  @Test
+  public void retryAfterFailureReusesAudioAndModelAndCanFailAgain() throws Exception {
+    try (RetryServer server = new RetryServer(503, 200)) {
+      begin();
+      byte[] audio = retainRecording();
+      assertNull("Retry must be hidden while busy", retryButton());
+      instrumentation.runOnMainSync(() -> BubbleService.instance.fail("Test failure"));
+      String lifecycle = text("Lifecycle status");
+      tapRetry();
+      waitFor(() -> server.requests.size() == 1 && retryButton() != null, 5000);
+      assertEquals("Hello world", text("First field"));
+      tapRetry();
+      waitFor(() -> text("First field").equals("Hello Retried words"), 5000);
+      assertEquals(2, server.requests.size());
+      for (byte[] request : server.requests) assertArrayEquals(audio, request);
+      assertTrue(server.models.stream().allMatch("parakeet_unified_en"::equals));
+      assertEquals(lifecycle, text("Lifecycle status"));
+      assertNull(MainActivity.pendingTranscript);
+      assertNotNull(retryButton());
+    }
+  }
+
+  @Test
+  public void retryReplacesCompletedTranscriptWithoutDuplicatingIt() throws Exception {
+    try (RetryServer server = new RetryServer(200)) {
+      begin();
+      retainRecording();
+      deliver("Nosa");
+      assertEquals("Hello Nosa", text("First field"));
+      tapRetry();
+      waitFor(() -> text("First field").equals("Hello Retried words"), 5000);
+      assertNull(MainActivity.pendingTranscript);
+    }
+  }
+
+  @Test
+  public void retryAfterFieldChangeKeepsResultForManualRecovery() throws Exception {
+    try (RetryServer server = new RetryServer(200)) {
+      begin();
+      retainRecording();
+      deliver("Nosa");
+      focus("Second field");
+      tapRetry();
+      waitFor(() -> "Retried words".equals(MainActivity.pendingTranscript), 5000);
+      assertEquals("Hello Nosa", text("First field"));
+      assertEquals("", text("Second field"));
+    }
+  }
+
+  @Test
+  public void cancelledRetryCannotDeliverIntoANewSession() throws Exception {
+    try (RetryServer server = new RetryServer(200)) {
+      server.release = new java.util.concurrent.CountDownLatch(1);
+      begin();
+      retainRecording();
+      deliver("Nosa");
+      tapRetry();
+      waitFor(() -> server.requests.size() == 1, 5000);
+      instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+      begin();
+      long fresh = BubbleService.instance.sessionId();
+      server.release.countDown();
+      server.thread.join(3000);
+      Thread.sleep(300);
+      assertEquals("Hello Nosa", text("First field"));
+      assertTrue(BubbleService.instance.isStarting(fresh));
+      assertNull(MainActivity.pendingTranscript);
+      instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+      assertNull(retryButton());
+    }
+  }
+
+  /** Loopback transcription responses: no microphone, private endpoint, or real model required. */
+  private final class RetryServer implements AutoCloseable {
+    final java.net.ServerSocket socket = new java.net.ServerSocket(0, 4, java.net.InetAddress.getByName("127.0.0.1"));
+    final List<byte[]> requests = new java.util.concurrent.CopyOnWriteArrayList<>();
+    final List<String> models = new java.util.concurrent.CopyOnWriteArrayList<>();
+    final Map<String, ?> saved = new HashMap<>(Prefs.get(context).getAll());
+    final Thread thread;
+    volatile java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(0);
+    volatile Throwable error;
+
+    RetryServer(int... statuses) throws Exception {
+      Prefs.get(context).edit().putString("endpoint", "http://127.0.0.1:" + socket.getLocalPort())
+          .putString("model", "different_model").putBoolean("local", true).putBoolean("desktopSync", false).commit();
+      socket.setSoTimeout(7000);
+      thread = new Thread(() -> {
+        try {
+          for (int status : statuses) {
+            try (java.net.Socket connection = socket.accept()) {
+              connection.setSoTimeout(5000);
+              var in = new java.io.DataInputStream(connection.getInputStream());
+              StringBuilder headers = new StringBuilder();
+              int next;
+              while (!headers.toString().endsWith("\r\n\r\n") && (next = in.read()) != -1)
+                headers.append((char) next);
+              int length = 0;
+              for (String line : headers.toString().split("\r\n")) {
+                if (line.toLowerCase(Locale.ROOT).startsWith("content-length:"))
+                  length = Integer.parseInt(line.substring(line.indexOf(':') + 1).trim());
+                if (line.toLowerCase(Locale.ROOT).startsWith("x-hex-model:"))
+                  models.add(line.substring(line.indexOf(':') + 1).trim());
+              }
+              byte[] body = new byte[length];
+              in.readFully(body);
+              requests.add(body);
+              if (!release.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                throw new java.io.IOException("Test response was never released");
+              byte[] response = "{\"text\":\"Retried words\"}".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+              var out = connection.getOutputStream();
+              out.write(("HTTP/1.1 " + status + " Test\r\nContent-Type: application/json\r\nContent-Length: "
+                  + response.length + "\r\nConnection: close\r\n\r\n").getBytes(java.nio.charset.StandardCharsets.US_ASCII));
+              out.write(response);
+              out.flush();
+            }
+          }
+        } catch (Throwable failure) { if (!socket.isClosed()) error = failure; }
+      }, "hex-test-retry-server");
+      thread.start();
+    }
+
+    @Override public void close() throws Exception {
+      release.countDown();
+      socket.close();
+      thread.join(3000);
+      var editor = Prefs.get(context).edit();
+      for (String key : List.of("endpoint", "model", "local", "desktopSync")) {
+        Object value = saved.get(key);
+        if (value instanceof String s) editor.putString(key, s);
+        else if (value instanceof Boolean b) editor.putBoolean(key, b);
+        else editor.remove(key);
+      }
+      editor.commit();
+      if (error != null) throw new AssertionError("Retry test server failed", error);
+    }
   }
 
   private void focus(String name) throws Exception {
@@ -378,6 +543,92 @@ public class DictationTest {
     begin();
     deliver("Nosa");
     waitFor(() -> text("First field").equals("Hello Nosa"), 3000);
+  }
+
+  private void hiddenCursorEditor() throws Exception {
+    Assume.assumeTrue(Build.VERSION.SDK_INT >= 33);
+    openEditorMode("hiddenCursor");
+    AccessibilityNodeInfo field = find("First field");
+    assertEquals(-1, field.getTextSelectionStart());
+    assertEquals(-1, field.getTextSelectionEnd());
+    field.recycle();
+    waitFor(() -> {
+      boolean[] ready = {false};
+      instrumentation.runOnMainSync(() -> {
+        var input = BubbleService.instance.getInputMethod();
+        ready[0] = input != null && input.getCurrentInputStarted()
+            && input.getCurrentInputConnection() != null;
+      });
+      return ready[0];
+    }, 4000);
+  }
+
+  private void selectFirst(int start, int end) throws Exception {
+    AccessibilityNodeInfo field = find("First field");
+    Bundle selection = new Bundle();
+    selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, start);
+    selection.putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, end);
+    assertTrue(field.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selection));
+    field.recycle();
+    Thread.sleep(200);
+  }
+
+  @Test
+  public void hiddenCursorReplacesSelectionThroughInputConnection() throws Exception {
+    hiddenCursorEditor();
+    begin();
+    deliver("Nosa 🌍");
+    waitFor(() -> text("First field").equals("Hello Nosa 🌍"), 3000);
+    assertNull(MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void hiddenCursorInsertsInMiddleWithoutReplacingSurroundingText() throws Exception {
+    hiddenCursorEditor();
+    selectFirst(6, 6);
+    begin();
+    deliver("Nosa's ");
+    waitFor(() -> text("First field").equals("Hello Nosa's world"), 3000);
+    assertNull(MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void hiddenCursorMovedDuringRecordingDoesNotReceiveTranscript() throws Exception {
+    hiddenCursorEditor();
+    begin();
+    selectFirst(0, 0);
+    deliver("Saved words");
+    assertEquals("Hello world", text("First field"));
+    assertEquals("Saved words", MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void hiddenCursorChangedFieldDoesNotReceiveTranscript() throws Exception {
+    hiddenCursorEditor();
+    begin();
+    focus("Second field");
+    deliver("Saved words");
+    assertEquals("Hello world", text("First field"));
+    assertEquals("", text("Second field"));
+    assertEquals("Saved words", MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void hiddenCursorCanRecoverLastTranscript() throws Exception {
+    hiddenCursorEditor();
+    MainActivity.pendingTranscript = "Recovered words";
+    instrumentation.runOnMainSync(() -> BubbleService.instance.retryTranscript());
+    waitFor(() -> text("First field").equals("Hello Recovered words"), 3000);
+    assertNull(MainActivity.pendingTranscript);
+  }
+
+  @Test
+  public void hiddenCursorWithoutInputStillAllowsRecordingAndRetainsTranscript() throws Exception {
+    openEditorMode("hiddenCursorNoInput");
+    begin();
+    deliver("Saved words");
+    assertEquals("Hello world", text("First field"));
+    assertEquals("Saved words", MainActivity.pendingTranscript);
   }
 
   @Test
