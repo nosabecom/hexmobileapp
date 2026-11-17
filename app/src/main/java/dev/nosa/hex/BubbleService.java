@@ -34,7 +34,8 @@ public class BubbleService extends AccessibilityService {
   private Runnable hold;
   private final SharedPreferences.OnSharedPreferenceChangeListener appearanceListener =
       (prefs, key) -> {
-        if ("bubbleSize".equals(key) || "bubbleTransparency".equals(key))
+        if ("bubbleSize".equals(key) || "bubbleTransparency".equals(key)
+            || "keepScreenOn".equals(key))
           handler.post(this::refreshAppearance);
       };
   private final BroadcastReceiver screenOff =
@@ -285,6 +286,11 @@ public class BubbleService extends AccessibilityService {
 
   private void refreshAppearance() {
     if (bubble == null) return;
+    // The visible overlay owns this flag, so removing it also releases the screen.
+    // An idle bubble must never keep another app awake indefinitely.
+    if (busy && Prefs.keepScreenOn(this))
+      params.flags |= WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON;
+    else params.flags &= ~WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON;
     int width =
         bubbleDimension(
             bubbleState.equals("recording") ? 156 : bubbleState.equals("processing") ? 112 : 56);

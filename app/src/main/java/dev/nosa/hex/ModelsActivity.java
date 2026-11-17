@@ -1,6 +1,5 @@
 package dev.nosa.hex;
 
-import android.app.Activity;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -10,7 +9,7 @@ import android.widget.*;
 import org.json.*;
 
 /** A live catalog from the selected host; installed and active are distinct states. */
-public class ModelsActivity extends Activity {
+public class ModelsActivity extends HexActivity {
   private LinearLayout rows;
   private TextView status;
   private final Handler handler = new Handler(Looper.getMainLooper());

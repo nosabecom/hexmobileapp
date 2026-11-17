@@ -16,6 +16,11 @@ Keep your keyboard, tap a text field, and use the movable Hex bubble to dictate.
   for 0.6 seconds to paste the last transcript into the currently focused field.
   Recording notification includes Cancel.
   Maximum recording: two minutes. Locking the screen cancels recording.
+- **Keep screen on while using Hex** is enabled by default. Hex screens and active
+  bubble recording/transcription stay awake, including retries. When dictation
+  finishes, fails, or is cancelled, other apps return to the normal screen timeout.
+  The idle bubble does not keep the phone awake. Turn this off on Hex's main screen
+  to use the normal timeout everywhere. The power button still locks the phone.
 - After a server dictation finishes or fails, a small circular retry arrow appears
   to the left of the bubble. Tap it to transcribe the same audio again without
   recording. It replaces the previous words only if the original field and cursor
@@ -155,6 +160,7 @@ Godseye, and the private Tailscale endpoint. Wispr Flow is stopped. Both install
 models passed prerecorded-speech transcription over the phone’s HTTPS connection.
 
 See [validation](docs/validation.md) for actual results and remaining device checks.
+See [keep-screen-on validation](docs/keep-screen-on.md) for 0.2.2 and pending device checks.
 See [third-party notices](THIRD_PARTY_NOTICES.md) for attribution and port differences.
 
 See [reload and recovery validation](docs/reload-and-recovery.md) for 0.1.4, and

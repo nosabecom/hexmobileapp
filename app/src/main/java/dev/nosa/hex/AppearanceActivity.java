@@ -1,6 +1,5 @@
 package dev.nosa.hex;
 
-import android.app.Activity;
 import android.content.res.ColorStateList;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -9,7 +8,7 @@ import android.view.*;
 import android.widget.*;
 
 /** Local, persistent appearance controls; the preview never opens a microphone. */
-public class AppearanceActivity extends Activity {
+public class AppearanceActivity extends HexActivity {
   private LinearLayout column;
   private DotScopeView idle, recording;
   private SeekBar size, transparency;

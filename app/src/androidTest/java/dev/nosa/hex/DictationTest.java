@@ -517,6 +517,59 @@ public class DictationTest {
     return width;
   }
 
+  private boolean overlayKeepsScreenOn() {
+    boolean[] awake = {false};
+    instrumentation.runOnMainSync(() -> {
+      for (android.view.View view : android.view.inspector.WindowInspector.getGlobalWindowViews()) {
+        if (view.getLayoutParams() instanceof android.view.WindowManager.LayoutParams params
+            && params.type == android.view.WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY)
+          awake[0] |= (params.flags & android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0;
+      }
+    });
+    return awake[0];
+  }
+
+  @Test
+  public void screenStaysAwakeOnlyDuringEnabledDictationAndReleasesAfterEveryOutcome() throws Exception {
+    boolean hadSetting = Prefs.get(context).contains("keepScreenOn");
+    boolean oldSetting = Prefs.keepScreenOn(context);
+    try {
+      Prefs.get(context).edit().remove("keepScreenOn").commit();
+      assertTrue("Enabled by default for existing installs", Prefs.keepScreenOn(context));
+      waitFor(() -> overlayWidth() > 0, 4000);
+      assertFalse("An idle bubble must allow sleep", overlayKeepsScreenOn());
+      String lifecycle = text("Lifecycle status");
+      begin();
+      assertTrue("Microphone startup must keep the screen on", overlayKeepsScreenOn());
+      instrumentation.runOnMainSync(() -> BubbleService.instance.state("■"));
+      assertTrue(overlayKeepsScreenOn());
+      instrumentation.runOnMainSync(() -> BubbleService.instance.state("…"));
+      assertTrue("Transcription must stay awake too", overlayKeepsScreenOn());
+      Prefs.get(context).edit().putBoolean("keepScreenOn", false).commit();
+      waitFor(() -> !overlayKeepsScreenOn(), 3000);
+      Prefs.get(context).edit().putBoolean("keepScreenOn", true).commit();
+      waitFor(this::overlayKeepsScreenOn, 3000);
+      deliver("Awake words");
+      assertFalse("Completion must release the screen", overlayKeepsScreenOn());
+      begin();
+      instrumentation.runOnMainSync(() -> BubbleService.instance.fail("Test failure"));
+      assertFalse("Failure must release the screen", overlayKeepsScreenOn());
+      begin();
+      instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+      assertFalse("Cancellation must release the screen", overlayKeepsScreenOn());
+      assertEquals("Screen control must preserve the editor lifecycle", lifecycle, text("Lifecycle status"));
+      Prefs.get(context).edit().putBoolean("keepScreenOn", false).commit();
+      begin();
+      assertFalse("A disabled setting must allow sleep during dictation", overlayKeepsScreenOn());
+    } finally {
+      instrumentation.runOnMainSync(() -> BubbleService.instance.cancel());
+      var edit = Prefs.get(context).edit();
+      if (hadSetting) edit.putBoolean("keepScreenOn", oldSetting);
+      else edit.remove("keepScreenOn");
+      edit.commit();
+    }
+  }
+
   @Test
   public void serverTokenRemainsVisuallyMasked() throws Exception {
     MainActivity activity =

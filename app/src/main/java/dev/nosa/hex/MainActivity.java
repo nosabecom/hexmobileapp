@@ -15,7 +15,7 @@ import android.view.*;
 import android.widget.*;
 import java.net.URI;
 
-public class MainActivity extends Activity {
+public class MainActivity extends HexActivity {
   private LinearLayout column;
   private TextView status;
   private EditText endpoint, token;
@@ -95,6 +95,20 @@ public class MainActivity extends Activity {
     button("Bubble appearance", () -> startActivity(new Intent(this, AppearanceActivity.class)));
     button("Transcript history", () -> startActivity(new Intent(this, HistoryActivity.class)));
     button("NewEra customizations", () -> startActivity(new Intent(this, CustomizationsActivity.class)));
+    label("SCREEN", 12, 0xffb3adb9);
+    Switch keepScreenOn = new Switch(this);
+    keepScreenOn.setText("Keep screen on while using Hex");
+    keepScreenOn.setTextColor(Color.WHITE);
+    keepScreenOn.setChecked(Prefs.keepScreenOn(this));
+    column.addView(keepScreenOn);
+    keepScreenOn.setOnCheckedChangeListener(
+        (b, enabled) -> Prefs.get(this).edit().putBoolean("keepScreenOn", enabled).apply());
+    label(
+        "Keeps the screen awake in Hex and while the bubble records or transcribes. Your normal"
+            + " screen timeout resumes when dictation ends. You can still lock the phone with the"
+            + " power button.",
+        14,
+        0xffb3adb9);
     label("TRANSCRIPTION", 12, 0xffb3adb9);
     local = new Switch(this);
     local.setText("On this phone · offline");

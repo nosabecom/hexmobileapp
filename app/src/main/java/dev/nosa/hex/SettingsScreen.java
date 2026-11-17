@@ -1,13 +1,12 @@
 package dev.nosa.hex;
 
-import android.app.Activity;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.WindowInsets;
 import android.widget.*;
 
 /** Shared visual shell for the history and desktop-customization screens. */
-abstract class SettingsScreen extends Activity {
+abstract class SettingsScreen extends HexActivity {
   LinearLayout column;
 
   int dp(int value) {

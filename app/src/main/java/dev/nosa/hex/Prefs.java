@@ -12,6 +12,10 @@ final class Prefs {
     return get(c).getBoolean("local", true);
   }
 
+  static boolean keepScreenOn(Context c) {
+    return get(c).getBoolean("keepScreenOn", true);
+  }
+
   static String endpoint(Context c) {
     return get(c).getString("endpoint", "");
   }
