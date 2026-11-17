@@ -26,10 +26,37 @@ phone still cancels dictation through the existing screen-off handling.
   cancellation, idle behavior, and preserving the editor lifecycle. A separate
   test covers the real settings switch, preference persistence after reopening,
   and screen flags in appearance, history, customizations, and model screens.
-- These new instrumentation tests compiled but were not run. The device tools
-  reported no available Android platform/device, and the local SDK has no
-  emulator installed. Actual screen-timeout behavior and power-button locking
-  remain to be verified on a device. This update has not been installed on the S21.
+- At the initial build, instrumentation tests compiled but no device was
+  available. The S21 was connected wirelessly later the same day; results follow.
+
+## S21 installation and verification — 2026-11-17
+
+- Installed the signed 0.2.2 update over the phone's existing wireless debugging
+  pairing. Android reports version 0.2.2, code 8. App data was preserved.
+- All three targeted instrumentation tests passed in 11.606 seconds:
+  `ScreenAwakeTest#togglePersistsAcrossScreensAndReopening`,
+  `DictationTest#screenStaysAwakeOnlyDuringEnabledDictationAndReleasesAfterEveryOutcome`,
+  and `DictationTest#microphoneStartsFromBubbleAndCancels`.
+- The fixture now has a screen-timeout test mode that omits its own keep-awake
+  flag. The regression checks Android's actual `mHoldScreenWindow`, confirming
+  that Hex owns the screen hold during startup and transcription and releases it
+  when the setting is disabled or dictation finishes. It also checks the overlay
+  flags during recording and after completion, failure, and cancellation, and
+  verifies that the editor lifecycle is unchanged.
+- The settings test covers toggling, reopening, and all Hex settings screens.
+  The microphone test starts and cancels a real microphone foreground service.
+- Instrumentation stops the app process when it exits. Reinstalled the same
+  signed app afterward to restore the accessibility binding, then confirmed Hex
+  is enabled and bound, the crashed-service list is empty, and no dictation
+  foreground service remains.
+- App and fixture lint passed after the test changes. These changes affect only
+  the tests and fixture; the installed app is the signed APK identified below.
+- The Device panel still cannot discover the connected phone, so installation
+  and the project's test runner used the existing wireless ADB connection. No
+  manual device control was performed. An elapsed-time screen-timeout check and
+  physical power-button locking remain manual checks.
+
+Test-run output: `artifacts/s21-screen-awake-tests-20261117.txt`.
 
 On-device check: set a short screen timeout, record past it, and verify the screen
 stays lit while Hex records and transcribes. Finish or cancel, leave the idle

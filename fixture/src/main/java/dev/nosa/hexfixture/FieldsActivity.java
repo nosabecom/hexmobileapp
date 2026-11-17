@@ -26,7 +26,9 @@ public class FieldsActivity extends Activity {
   @Override
   public void onCreate(Bundle b) {
     super.onCreate(b);
-    getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    // Screen-control tests must exercise Hex's overlay without the fixture holding the display on.
+    if (!"screenTimeout".equals(getIntent().getStringExtra("editorMode")))
+      getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     LinearLayout layout = new LinearLayout(this);
     layout.setOrientation(LinearLayout.VERTICAL);
     layout.setPadding(32, 100, 32, 20);

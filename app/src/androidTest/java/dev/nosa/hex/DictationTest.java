@@ -529,6 +529,19 @@ public class DictationTest {
     return awake[0];
   }
 
+  private boolean systemHoldsHexScreen() {
+    try (var fd = ui.executeShellCommand("dumpsys window");
+        var input = new java.io.FileInputStream(fd.getFileDescriptor())) {
+      for (String line : new String(input.readAllBytes()).split("\n")) {
+        if (line.contains("mHoldScreenWindow="))
+          return line.contains("dev.nosa.hex") && !line.contains("dev.nosa.hexfixture");
+      }
+      throw new AssertionError("Android did not report the window holding the screen on");
+    } catch (java.io.IOException e) {
+      throw new AssertionError("Could not inspect Android's screen holder", e);
+    }
+  }
+
   @Test
   public void screenStaysAwakeOnlyDuringEnabledDictationAndReleasesAfterEveryOutcome() throws Exception {
     boolean hadSetting = Prefs.get(context).contains("keepScreenOn");
@@ -536,21 +549,26 @@ public class DictationTest {
     try {
       Prefs.get(context).edit().remove("keepScreenOn").commit();
       assertTrue("Enabled by default for existing installs", Prefs.keepScreenOn(context));
+      openEditorMode("screenTimeout");
       waitFor(() -> overlayWidth() > 0, 4000);
       assertFalse("An idle bubble must allow sleep", overlayKeepsScreenOn());
       String lifecycle = text("Lifecycle status");
       begin();
       assertTrue("Microphone startup must keep the screen on", overlayKeepsScreenOn());
+      waitFor(this::systemHoldsHexScreen, 3000);
       instrumentation.runOnMainSync(() -> BubbleService.instance.state("■"));
       assertTrue(overlayKeepsScreenOn());
       instrumentation.runOnMainSync(() -> BubbleService.instance.state("…"));
       assertTrue("Transcription must stay awake too", overlayKeepsScreenOn());
+      waitFor(this::systemHoldsHexScreen, 3000);
       Prefs.get(context).edit().putBoolean("keepScreenOn", false).commit();
       waitFor(() -> !overlayKeepsScreenOn(), 3000);
+      waitFor(() -> !systemHoldsHexScreen(), 3000);
       Prefs.get(context).edit().putBoolean("keepScreenOn", true).commit();
       waitFor(this::overlayKeepsScreenOn, 3000);
       deliver("Awake words");
       assertFalse("Completion must release the screen", overlayKeepsScreenOn());
+      waitFor(() -> !systemHoldsHexScreen(), 3000);
       begin();
       instrumentation.runOnMainSync(() -> BubbleService.instance.fail("Test failure"));
       assertFalse("Failure must release the screen", overlayKeepsScreenOn());
